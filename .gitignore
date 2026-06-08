@@ -1,0 +1,58 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Compiled binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+hello_inference
+tui_hello
+day*_test
+ctest_run
+
+# vcpkg
+vcpkg_installed/
+
+# Models & data (huge binaries — link to them in README, do NOT commit)
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+models/
+
+# Recordings
+replays/*.jsonl
+replays/*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,15 @@
+{
+  "name": "llm-tui",
+  "version-string": "0.1.0",
+  "description": "Local LLM Instrumentation, Tracing, and Replay Platform",
+  "homepage": "https://github.com/manishkg27/Local-LLM-Instrumentation-Tracing-and-Replay-Platform",
+  "license": "MIT",
+  "builtin-baseline": "75672db6bd812b060482b0f00b5a16b18a0c0f07",
+  "dependencies": [
+    "ftxui",
+    "spdlog",
+    "fmt",
+    "catch2",
+    "nlohmann-json"
+  ]
+}
