@@ -15,6 +15,22 @@
 //
 //  Run it and try:  j  j  k  l  Tab  h  q   (q to quit)
 //
+//  Keybinding model
+//  -----------------
+//  The TUI renders a 3+3 grid:
+//
+//      row 0:  [1. MODEL TOPOLOGY] [2. LIVE PACKET STREAM] [3. ATTENTION MATRIX]
+//      row 1:  [4. RUNTIME METRICS] [5. ANOMALY LEDGER]   [6. STATUS]
+//
+//  so the focus cursor is 2-D: (row, col).
+//    h / ←  move left  within the SAME row (col -1, wrap 2→0)
+//    l / →  move right within the SAME row (col +1, wrap 0→2)
+//    j / ↓  jump to the OTHER row, same column (row toggles 0↔1)
+//    k / ↑  jump to the OTHER row, same column (same as j here — only 2 rows)
+//    Tab    cycle through all 6 in linear order (1→2→3→4→5→6→1…)
+//    q/Esc  quit
+//    + / -  grow / shrink the "4. RUNTIME METRICS" progress bar
+//
 //  Compatibility note:
 //  The vcpkg-installed FTXUI v5 only exposes `vbox(Elements)` (and same for
 //  `hbox`), where `Elements` is a `std::vector<Element>`. The variadic
@@ -111,19 +127,22 @@ int main() {
 
     auto screen = ScreenInteractive::TerminalOutput();
 
-    // Shared state
+    // ---- Shared state -------------------------------------------------
     std::atomic<int> keypresses{0};
-    std::atomic<int> progress{3};      // 0..10
-    std::atomic<int> focus_idx{0};     // 0..4 (which panel is "active")
+    std::atomic<int> progress{3};      // 0..10 (drives the 4. RUNTIME METRICS bar)
+    // Focus is 2-D because the TUI is a 3+3 grid.
+    //   row ∈ {0, 1},  col ∈ {0, 1, 2}
+    //   linear index fi = row*3 + col  ∈ {0, 1, 2, 3, 4, 5}
+    std::atomic<int> focus_row{0};
+    std::atomic<int> focus_col{0};
     std::atomic<bool> running{true};
 
-    // The "renderer" lambda re-evaluates the DOM on every event.
+    // ---- Renderer -----------------------------------------------------
     auto renderer = Renderer([&] {
-        const int kp = keypresses.load();
-        const int pr = progress.load();
-        const int fi = focus_idx.load();
+        const int kp  = keypresses.load();
+        const int pr  = progress.load();
+        const int fi  = focus_row.load() * 3 + focus_col.load();
 
-        // 5 mock panels arranged like the final TUI mockup.
         ftxui::Elements panel_row1 = {
             stat_box("1. MODEL TOPOLOGY",
                      fi == 0 ? "▶ Active" : "idle", 6) |
@@ -156,55 +175,72 @@ int main() {
         return vbox(std::move(rows));
     });
 
-    // Event handler — vim-style
+    // ---- Event handler — 2-D navigation ------------------------------
     auto component = CatchEvent(renderer, [&](Event evt) {
+        // q / Esc  →  quit
         if (evt == Event::Character('q') || evt == Event::Escape) {
             running = false;
             screen.ExitLoopClosure()();
             return true;
         }
+
+        // Tab  →  cycle all 6 panels in linear order 0→1→2→3→4→5→0…
         if (evt == Event::Tab) {
-            focus_idx = (focus_idx.load() + 1) % 5;
+            int linear = focus_row.load() * 3 + focus_col.load();
+            linear = (linear + 1) % 6;
+            focus_row = linear / 3;
+            focus_col = linear % 3;
             keypresses++;
             return true;
         }
+
+        // h / ←  →  move left  in the SAME row (col -1, wrap 2→0)
         if (evt == Event::Character('h') || evt == Event::ArrowLeft) {
-            int f = focus_idx.load();
-            focus_idx = (f + 4) % 5;       // wrap backwards
+            int c = focus_col.load();
+            focus_col = (c + 2) % 3;   // modular -1 ≡ +2 (mod 3)
             keypresses++;
             return true;
         }
+
+        // l / →  →  move right in the SAME row (col +1, wrap 0→2)
         if (evt == Event::Character('l') || evt == Event::ArrowRight) {
-            int f = focus_idx.load();
-            focus_idx = (f + 1) % 5;
+            int c = focus_col.load();
+            focus_col = (c + 1) % 3;
             keypresses++;
             return true;
         }
+
+        // j / ↓  →  jump to the OTHER row, same column  (row toggles 0↔1)
         if (evt == Event::Character('j') || evt == Event::ArrowDown) {
-            int f = focus_idx.load();
-            focus_idx = std::min(4, f + 1);
+            focus_row = 1 - focus_row.load();   // 0→1, 1→0
             keypresses++;
             return true;
         }
+
+        // k / ↑  →  jump to the OTHER row, same column  (same as j for 2 rows)
         if (evt == Event::Character('k') || evt == Event::ArrowUp) {
-            int f = focus_idx.load();
-            focus_idx = std::max(0, f - 1);
+            focus_row = 1 - focus_row.load();
             keypresses++;
             return true;
         }
+
+        // + / =  →  grow progress bar (0..10)
         if (evt == Event::Character('+') || evt == Event::Character('=')) {
             int p = progress.load();
             progress = std::min(10, p + 1);
             keypresses++;
             return true;
         }
+
+        // - / _  →  shrink progress bar (0..10)
         if (evt == Event::Character('-') || evt == Event::Character('_')) {
             int p = progress.load();
             progress = std::max(0, p - 1);
             keypresses++;
             return true;
         }
-        return false;
+
+        return false;   // not handled, let FTXUI's default handling see it
     });
 
     // Tick the screen at ~30 FPS even with no input, so the focus highlight
