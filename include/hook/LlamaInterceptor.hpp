@@ -4,12 +4,12 @@
 //  Thin RAII wrapper around llama.cpp's public C API.
 //
 //  Day 1: load a GGUF model, decode 1 token, print layer topology.
-//  Day 3: wrap llama_decode with chrono timing, build ModelTopology,
-//         push TelemetryPackets to the RingBuffer.
+//  Day 2: holds an AnomalyDetector and (optionally) pushes TelemetryPackets
+//         to a RingBuffer. The first end-to-end smoke test of the data path.
+//  Day 3: full ModelTopology + per-layer latency packets wired here.
 //
 //  We do NOT modify llama.cpp source. We just call its public C API and
-//  add instrumentation around the calls. This satisfies the "non-invasive"
-//  requirement of the project.
+//  add instrumentation around the calls.
 // =============================================================================
 #pragma once
 
@@ -18,11 +18,14 @@
 #include <string>
 #include <vector>
 
+#include "core/AnomalyDetector.hpp"
+#include "core/RingBuffer.hpp"
 #include "core/TelemetryPacket.hpp"
 
 struct llama_model;
 struct llama_context;
 struct llama_sampler;
+struct ggml_tensor;
 
 namespace llm_tui {
 
@@ -43,7 +46,7 @@ struct ModelTopology {
 
 class LlamaInterceptor {
 public:
-    LlamaInterceptor() = default;
+    LlamaInterceptor();
     ~LlamaInterceptor();
 
     LlamaInterceptor(const LlamaInterceptor&)            = delete;
@@ -56,17 +59,39 @@ public:
               int n_threads = 0 /* 0 = auto */);
 
     // Day 1: decode a single token, print the result, return latency in us.
-    // Day 3: full implementation that pushes TelemetryPackets.
-    float decode_one(const std::string& prompt);
+    // Day 2: also pushes a TensorStart / LayerLatency / TokenEnd packet to
+    //        the optional sink and runs them through the AnomalyDetector.
+    // Day 3: per-layer timing; multiple packets per call.
+    // Day 7: Changed to generate up to max_tokens and pass text to a callback.
+    void generate(const std::string& prompt, std::function<void(const std::string&)> on_token = nullptr);
 
+    // Wire a sink ring-buffer. Optional — without it, packets just go to
+    // the AnomalyDetector and are dropped after evaluation. Multiple calls
+    // replace the previous sink.
+    void set_sink(RingBuffer<TelemetryPacket>* sink) { sink_ = sink; }
+
+    // Read-only accessors used by the TUI panels.
     const ModelTopology& topology() const { return topology_; }
+    AnomalyDetector&     detector()       { return detector_; }
+    const AnomalyDetector& detector() const { return detector_; }
     bool loaded() const { return model_ != nullptr && ctx_ != nullptr; }
 
 private:
+    // Helper: build a Topology packet from this->topology_ and dispatch it
+    // through both the sink and the detector. Called once at the end of
+    // load().
+    void emit_topology_packet();
+    bool on_eval(struct ggml_tensor* t, bool ask);
+
     llama_model*   model_ = nullptr;
     llama_context* ctx_   = nullptr;
     llama_sampler* smpl_  = nullptr;
     ModelTopology  topology_;
+    AnomalyDetector detector_;
+    RingBuffer<TelemetryPacket>* sink_ = nullptr;
+    std::uint32_t  seq_counter_ = 0;
+    std::chrono::steady_clock::time_point last_tensor_time_;
+    std::vector<float> layer_latencies_us_;
 };
 
 } // namespace llm_tui

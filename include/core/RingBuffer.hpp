@@ -33,10 +33,10 @@ public:
     RingBuffer(const RingBuffer&)            = delete;
     RingBuffer& operator=(const RingBuffer&) = delete;
 
-    // Block until the buffer has space, then push. Returns false if shutdown.
+    // Block until the buffer has space (blocks when at 90% capacity to preserve safety margin), then push. Returns false if shutdown.
     bool push(const T& item) {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_not_full_.wait(lk, [&] { return closed_ || buf_.size() < capacity_; });
+        cv_not_full_.wait(lk, [&] { return closed_ || buf_.size() < max_size(); });
         if (closed_) return false;
         buf_.push_back(item);
         lk.unlock();
@@ -44,11 +44,10 @@ public:
         return true;
     }
 
-    // Non-blocking push: drops the item if the buffer is full. Useful for
-    // stats packets where we don't want to stall the model.
+    // Non-blocking push: drops the item if the buffer is at 90% capacity or full.
     bool try_push(const T& item) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (closed_ || buf_.size() >= capacity_) return false;
+        if (closed_ || buf_.size() >= max_size()) return false;
         buf_.push_back(item);
         cv_not_empty_.notify_one();
         return true;
@@ -65,6 +64,16 @@ public:
         T item = std::move(buf_.front());
         buf_.pop_front();
         lk.unlock();
+        cv_not_full_.notify_one();
+        return item;
+    }
+
+    // Non-blocking pop: returns the front item, or nullopt if empty or closed.
+    std::optional<T> try_pop() {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (closed_ || buf_.empty()) return std::nullopt;
+        T item = std::move(buf_.front());
+        buf_.pop_front();
         cv_not_full_.notify_one();
         return item;
     }
@@ -90,6 +99,13 @@ public:
     }
 
 private:
+    std::size_t max_size() const noexcept {
+        if (capacity_ < 10) {
+            return capacity_;
+        }
+        return (capacity_ * 9) / 10;
+    }
+
     mutable std::mutex      mu_;
     std::condition_variable cv_not_empty_;
     std::condition_variable cv_not_full_;

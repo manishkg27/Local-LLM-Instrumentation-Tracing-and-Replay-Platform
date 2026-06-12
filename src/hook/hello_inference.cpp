@@ -1,11 +1,12 @@
 // =============================================================================
 //  hello_inference.cpp
 //  -----------------------------------------------------------------------------
-//  Day 1 — Person 1 deliverable.
+//  Day 1 + Day 2 — Person 1 deliverable.
 //
 //  Loads a GGUF model via LlamaInterceptor, decodes 1 token, prints layer
-//  topology and decode latency. Verifies that the entire stack (vcpkg +
-//  ftxui/spdlog + llama.cpp shared libs) builds and runs end-to-end.
+//  topology and decode latency, drains the telemetry ring buffer, and
+//  shows the first end-to-end data path: Interceptor -> RingBuffer ->
+//  AnomalyDetector.
 //
 //  Usage:
 //      build/hello_inference [path-to-gguf]
@@ -36,7 +37,7 @@ std::shared_ptr<spdlog::logger> app_log() {
 
 int main(int argc, char** argv) {
     auto log = app_log();
-    log->info("=== hello_inference (Day 1) ===");
+    log->info("=== hello_inference (Day 2) ===");
 
     // ---- Resolve model path ----
     std::string model_path =
@@ -57,8 +58,14 @@ int main(int argc, char** argv) {
     log->info("Model: {}", model_path);
     log->info("Model size: {:.2f} MB", fs::file_size(model_path) / (1024.0 * 1024.0));
 
+    // ---- Wire a sink so the TUI consumer (D6) can drain the same queue ----
+    // For Day 2 we just allocate a small buffer and drain it after the
+    // decode call to prove the funnel works end-to-end.
+    llm_tui::RingBuffer<llm_tui::TelemetryPacket> sink(512);
+
     // ---- Hook + load ----
     llm_tui::LlamaInterceptor hook;
+    hook.set_sink(&sink);
     if (!hook.load(model_path, /*n_ctx=*/2048, /*n_threads=*/0)) {
         log->error("LlamaInterceptor::load() failed");
         return 3;
@@ -66,15 +73,42 @@ int main(int argc, char** argv) {
 
     // ---- Decode a tiny prompt to exercise the path ----
     try {
-        const std::string prompt = "Hello";
-        float us = hook.decode_one(prompt);
-        log->info("decode_one() took {:.2f} us total", us);
+        const std::vector<std::string> prompts = {"Hello"};
+        for (const auto& prompt : prompts) {
+            fmt::print("Prompt: \"{}\"\n", prompt);
+            
+            hook.generate(prompt, [](const std::string& text) {
+                fmt::print("{}", text);
+                fflush(stdout);
+            });
+            fmt::print("\n\n");
+        }
 
-        // ---- Summary ----
+        // ---- Drain the sink and show what came through ----
+        std::vector<llm_tui::TelemetryPacket> drained;
+        while (true) {
+            auto p = sink.pop_for(std::chrono::milliseconds(5));
+            if (!p.has_value()) break;
+            drained.push_back(*p);
+        }
+        log->info("Drained {} telemetry packets from sink", drained.size());
+        for (auto& p : drained) {
+            log->info("  [seq={:>4}] kind={:<14} layer={:>3}  lat={:.1f}us",
+                      p.sequence_id,
+                      llm_tui::to_string(p.kind),
+                      p.layer_id,
+                      p.latency_us);
+        }
+
+        // ---- AnomalyDetector summary ----
+        const auto lg2 = hook.detector().ledger();
+        log->info("AnomalyDetector: {} entries in ledger", lg2.size());
+
+        // ---- Summary box ----
         const auto& t = hook.topology();
         std::cout << "\n"
                   << "╔══════════════════════════════════════════════════════════╗\n"
-                  << "║           LLM-TUI Day 1 — hello_inference PASS          ║\n"
+                  << "║           LLM-TUI Day 2 — hello_inference PASS          ║\n"
                   << "╠══════════════════════════════════════════════════════════╣\n"
                   << "║  Model   : " << t.name << "\n"
                   << "║  n_layer : " << t.n_layer << "\n"
@@ -83,7 +117,8 @@ int main(int argc, char** argv) {
                   << "║  n_vocab : " << t.n_vocab << "\n"
                   << "║  n_params: " << (t.n_params / 1e9) << " B\n"
                   << "║  device  : " << t.device_name << "\n"
-                  << "║  decode  : " << us << " us\n"
+                  << "║  packets : " << drained.size() << " (drained from sink)\n"
+                  << "║  anomaly : " << lg2.size() << " (in detector ledger)\n"
                   << "╚══════════════════════════════════════════════════════════╝\n";
     } catch (const std::exception& e) {
         log->error("decode_one threw: {}", e.what());
