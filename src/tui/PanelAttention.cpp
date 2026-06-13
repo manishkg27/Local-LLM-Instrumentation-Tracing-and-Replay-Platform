@@ -36,14 +36,33 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             float attn_data[16] = {0.0f};
             bool has_patch = false;
             
-            if (!state->packets.empty()) {
-                time_ns = state->packets.back().timestamp_ns;
+            int target = state->target_layer_id;
+            bool is_attention_target = false;
+            
+            if (target != -1) {
+                for (const auto& node : state->visible_nodes) {
+                    if (node->layer_id == target && node->type == LayerType::AttentionSelf) {
+                        is_attention_target = true;
+                        break;
+                    }
+                }
+                if (!is_attention_target) {
+                    return text("Select an Attention layer to view the matrix") | dim | center;
+                }
+            }
+            
+            int max_idx = state->is_replay_mode ? state->replay_cursor : static_cast<int>(state->packets.size()) - 1;
+            
+            if (max_idx >= 0 && max_idx < static_cast<int>(state->packets.size())) {
+                time_ns = state->packets[max_idx].timestamp_ns;
                 
                 // Search for the latest TensorStats packet to extract real attn_patch
-                for (auto it = state->packets.rbegin(); it != state->packets.rend(); ++it) {
-                    if (it->kind == PacketKind::TensorStats && it->layer_type == LayerType::AttentionSelf) {
-                        for (int i = 0; i < 16; ++i) {
-                            attn_data[i] = it->attn_patch[i];
+                for (int i = max_idx; i >= 0; --i) {
+                    const auto& it = state->packets[i];
+                    if (it.kind == PacketKind::TensorStats && it.layer_type == LayerType::AttentionSelf) {
+                        if (target != -1 && it.layer_id != target) continue;
+                        for (int j = 0; j < 16; ++j) {
+                            attn_data[j] = it.attn_patch[j];
                         }
                         has_patch = true;
                         break;
@@ -118,7 +137,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             return vbox(Elements{
                 text("   Attention Matrix Viewport (16x16)") | bold | center,
                 separator(),
-                vbox(std::move(grid_rows)) | center | flex,
+                vbox(std::move(grid_rows)) | center,
                 separator(),
                 hbox(std::move(info)) | center
             });
@@ -178,6 +197,8 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             
             return false;
         }
+
+        bool Focusable() const override { return true; }
     };
     
     return std::make_shared<Impl>(state);

@@ -51,11 +51,23 @@ struct AppState {
     float attention_contrast = 1.0f;
     std::string status_message = "Press [:] to type command, [?] or [:help] for commands";
 
+    // Application Control
+    bool capture_paused = false;
+    int target_layer_id = -1; // Explicitly selected layer to filter other panels by
+    int breakpoint_layer_id = -1; // Auto-pause if this layer is hit
+    
+    // Replay Mode Stepping
+    bool is_replay_mode = false;
+    int replay_cursor = -1; // -1 means show all (or inactive if !is_replay_mode)
+
     AppState();
     
     void update_from_packet(const TelemetryPacket& pkt);
     void build_tree();
     void update_visible_nodes();
+
+    bool save_to_file(const std::string& filename);
+    bool load_from_file(const std::string& filename);
 };
 
 } // namespace llm_tui

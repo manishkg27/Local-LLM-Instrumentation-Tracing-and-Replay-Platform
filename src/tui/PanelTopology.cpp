@@ -36,12 +36,12 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
                 // 2. Expand/Collapse icon
                 std::string expand_icon = "  ";
                 if (node->expandable) {
-                    expand_icon = node->expanded ? "▼ " : "▶ ";
+                    expand_icon = node->expanded ? "󰅂 " : "󰅀 ";
                 }
                 
                 // 3. Active execution marker ●
                 bool is_active = (node->layer_id != -1 && node->layer_id == state->active_layer_id);
-                Element active_marker = text(is_active ? "● " : "  ");
+                Element active_marker = text(is_active ? "󰝤 " : "  ");
                 if (is_active) {
                     active_marker = active_marker | color(Color::Green);
                 }
@@ -98,7 +98,12 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
                 state->selected_node_idx = std::max(state->selected_node_idx - 1, 0);
                 return true;
             }
-            if (event == ftxui::Event::Character(' ') || event == ftxui::Event::Return) {
+            if (event == ftxui::Event::Character(' ') ) {
+                auto& node = state->visible_nodes[state->selected_node_idx];
+                state->target_layer_id = node->layer_id;
+                return true;
+            }
+            if (event == ftxui::Event::Return) {
                 auto& node = state->visible_nodes[state->selected_node_idx];
                 if (node->expandable) {
                     node->expanded = !node->expanded;
@@ -134,6 +139,8 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
             
             return false;
         }
+
+        bool Focusable() const override { return true; }
     };
     
     return std::make_shared<Impl>(state);

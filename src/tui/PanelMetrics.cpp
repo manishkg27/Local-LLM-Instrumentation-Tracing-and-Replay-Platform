@@ -22,17 +22,20 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
             }
             std::lock_guard<std::recursive_mutex> lock(state->mutex);
             
-            // Find currently selected node
-            std::shared_ptr<TreeNode> selected_node = nullptr;
-            if (state->selected_node_idx >= 0 && state->selected_node_idx < static_cast<int>(state->visible_nodes.size())) {
-                selected_node = state->visible_nodes[state->selected_node_idx];
+            int target_layer = state->target_layer_id;
+            if (target_layer == -1) {
+                return text("Press [Space] in Topology to select a layer") | dim | center;
             }
             
-            if (!selected_node) {
-                return text("No layer selected") | dim | center;
+            std::string layer_name = "Layer " + std::to_string(target_layer);
+            LayerType layer_type = LayerType::Unknown;
+            // Best-effort to find the name/type
+            for (const auto& node : state->visible_nodes) {
+                if (node->layer_id == target_layer && node->type != LayerType::Unknown) {
+                    layer_name = node->name;
+                    layer_type = node->type;
+                }
             }
-            
-            int target_layer = selected_node->layer_id;
             
             // Search back in history for stats & latency packets of this layer
             float latency_us = 0.0f;
@@ -44,21 +47,27 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
             bool has_stats = false;
             bool has_topology = false;
             
-            for (auto it = state->packets.rbegin(); it != state->packets.rend(); ++it) {
-                if (it->layer_id == target_layer) {
-                    if (it->kind == PacketKind::LayerLatency && !has_latency) {
-                        latency_us = it->latency_us;
-                        has_latency = true;
-                    } else if (it->kind == PacketKind::TensorStats && !has_stats) {
-                        sparsity = it->sparsity;
-                        mean = it->mean;
-                        max_abs = it->max_abs;
-                        shape = it->shape;
-                        has_stats = true;
-                    } else if (it->kind == PacketKind::Topology && !has_topology) {
-                        shape = it->shape;
-                        has_topology = true;
+            int max_idx = state->is_replay_mode ? state->replay_cursor : static_cast<int>(state->packets.size()) - 1;
+            
+            if (max_idx >= 0 && max_idx < static_cast<int>(state->packets.size())) {
+                for (int i = max_idx; i >= 0; --i) {
+                    const auto& it = state->packets[i];
+                    if (it.layer_id == target_layer) {
+                        if (it.kind == PacketKind::LayerLatency && !has_latency) {
+                            latency_us = it.latency_us;
+                            has_latency = true;
+                        } else if (it.kind == PacketKind::TensorStats && !has_stats) {
+                            sparsity = it.sparsity;
+                            mean = it.mean;
+                            max_abs = it.max_abs;
+                            shape = it.shape;
+                            has_stats = true;
+                        } else if (it.kind == PacketKind::Topology && !has_topology) {
+                            shape = it.shape;
+                            has_topology = true;
+                        }
                     }
+                    if (has_latency && has_stats && has_topology) break;
                 }
             }
             
@@ -66,10 +75,10 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
             Elements details;
             details.push_back(hbox(Elements{
                 text("Layer: ") | dim,
-                text(selected_node->name) | bold | color(Color::Green)
+                text(layer_name) | bold | color(Color::Green)
             }));
             
-            std::string type_str = (selected_node->type != LayerType::Unknown) ? to_string(selected_node->type) : "Container";
+            std::string type_str = (layer_type != LayerType::Unknown) ? to_string(layer_type) : "Container";
             details.push_back(hbox(Elements{
                 text("Type:  ") | dim,
                 text(type_str) | color(Color::Cyan)
@@ -166,6 +175,8 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
         bool OnEvent(ftxui::Event event) override {
             return false;
         }
+
+        bool Focusable() const override { return true; }
     };
     
     return std::make_shared<Impl>(state);

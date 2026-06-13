@@ -40,6 +40,16 @@ ftxui::Component CreatePanelAnomalies(std::weak_ptr<AppState> state) {
             }
             
             int total = static_cast<int>(state->anomalies.size());
+            if (state->is_replay_mode && state->replay_cursor >= 0 && state->replay_cursor < static_cast<int>(state->packets.size())) {
+                uint64_t max_ts = state->packets[state->replay_cursor].timestamp_ns;
+                int valid_count = 0;
+                for (const auto& a : state->anomalies) {
+                    if (a.timestamp_ns <= max_ts) valid_count++;
+                    else break;
+                }
+                total = valid_count;
+            }
+            
             if (total == 0) {
                 rows.push_back(text("✓ No numerical anomalies detected") | color(Color::Green));
                 return vbox(std::move(rows));
@@ -116,6 +126,8 @@ ftxui::Component CreatePanelAnomalies(std::weak_ptr<AppState> state) {
             }
             return false;
         }
+
+        bool Focusable() const override { return true; }
     };
     
     return std::make_shared<Impl>(state);

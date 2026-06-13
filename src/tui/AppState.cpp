@@ -1,7 +1,98 @@
 #include "tui/AppState.hpp"
 #include <algorithm>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+
+using json = nlohmann::json;
 
 namespace llm_tui {
+
+// --- JSON Serialization for TelemetryPacket ---
+void to_json(json& j, const TelemetryPacket& p) {
+    j = json{
+        {"sequence_id", p.sequence_id},
+        {"timestamp_ns", p.timestamp_ns},
+        {"kind", static_cast<int>(p.kind)},
+        {"layer_id", p.layer_id},
+        {"layer_type", static_cast<int>(p.layer_type)},
+        {"device", p.device},
+        {"shape", p.shape},
+        {"latency_us", p.latency_us},
+        {"sparsity", p.sparsity},
+        {"mean", p.mean},
+        {"sigma", p.sigma},
+        {"max_abs", p.max_abs},
+        {"anomaly_code", static_cast<int>(p.anomaly_code)},
+        {"severity", static_cast<int>(p.severity)}
+    };
+    j["attn_patch"] = std::vector<float>(std::begin(p.attn_patch), std::end(p.attn_patch));
+}
+
+void from_json(const json& j, TelemetryPacket& p) {
+    j.at("sequence_id").get_to(p.sequence_id);
+    j.at("timestamp_ns").get_to(p.timestamp_ns);
+    int kind; j.at("kind").get_to(kind); p.kind = static_cast<PacketKind>(kind);
+    j.at("layer_id").get_to(p.layer_id);
+    int type; j.at("layer_type").get_to(type); p.layer_type = static_cast<LayerType>(type);
+    j.at("device").get_to(p.device);
+    j.at("shape").get_to(p.shape);
+    j.at("latency_us").get_to(p.latency_us);
+    j.at("sparsity").get_to(p.sparsity);
+    j.at("mean").get_to(p.mean);
+    j.at("sigma").get_to(p.sigma);
+    j.at("max_abs").get_to(p.max_abs);
+    int acode; j.at("anomaly_code").get_to(acode); p.anomaly_code = static_cast<AnomalyCode>(acode);
+    int sev; j.at("severity").get_to(sev); p.severity = static_cast<Severity>(sev);
+    if (j.contains("attn_patch")) {
+        std::vector<float> patch = j.at("attn_patch").get<std::vector<float>>();
+        for (size_t i = 0; i < std::min(patch.size(), size_t(16)); ++i) {
+            p.attn_patch[i] = patch[i];
+        }
+    }
+}
+
+// --- JSON Serialization for LedgerEntry ---
+void to_json(json& j, const LedgerEntry& e) {
+    j = json{
+        {"severity", static_cast<int>(e.severity)},
+        {"code", static_cast<int>(e.code)},
+        {"layer_id", e.layer_id},
+        {"timestamp_ns", e.timestamp_ns},
+        {"message", e.message}
+    };
+}
+
+void from_json(const json& j, LedgerEntry& e) {
+    int sev; j.at("severity").get_to(sev); e.severity = static_cast<Severity>(sev);
+    int code; j.at("code").get_to(code); e.code = static_cast<AnomalyCode>(code);
+    j.at("layer_id").get_to(e.layer_id);
+    j.at("timestamp_ns").get_to(e.timestamp_ns);
+    j.at("message").get_to(e.message);
+}
+
+// --- JSON Serialization for ModelTopology ---
+void to_json(json& j, const ModelTopology& t) {
+    j = json{
+        {"n_layer", t.n_layer},
+        {"n_head", t.n_head},
+        {"n_embd", t.n_embd},
+        {"n_vocab", t.n_vocab},
+        {"n_params", t.n_params},
+        {"name", t.name}
+    };
+}
+
+void from_json(const json& j, ModelTopology& t) {
+    j.at("n_layer").get_to(t.n_layer);
+    j.at("n_head").get_to(t.n_head);
+    j.at("n_embd").get_to(t.n_embd);
+    j.at("n_vocab").get_to(t.n_vocab);
+    j.at("n_params").get_to(t.n_params);
+    j.at("name").get_to(t.name);
+}
 
 AppState::AppState() {
     tree_root = std::make_shared<TreeNode>();
@@ -13,8 +104,11 @@ AppState::AppState() {
 void AppState::update_from_packet(const TelemetryPacket& pkt) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     
-    // Store packet
+    // Store packet and cap at 500
     packets.push_back(pkt);
+    if (packets.size() > 500) {
+        packets.erase(packets.begin(), packets.begin() + (packets.size() - 500));
+    }
 
     if (pkt.kind == PacketKind::Topology) {
         if (pkt.layer_id == -1) {
@@ -193,6 +287,60 @@ void AppState::update_visible_nodes() {
         }
     } else {
         selected_node_idx = 0;
+    }
+}
+
+bool AppState::save_to_file(const std::string& filename) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    try {
+        json j;
+        
+        // Metadata
+        j["model_name"] = topology.name;
+        
+        auto now = std::time(nullptr);
+        auto tm = *std::localtime(&now);
+        std::stringstream ss;
+        ss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S");
+        j["captured_at"] = ss.str();
+        
+        j["prompt"] = current_prompt;
+        
+        // Data
+        j["model_loaded"] = model_loaded;
+        j["topology"] = topology;
+        j["packets"] = packets;
+        j["anomalies"] = anomalies;
+        
+        std::ofstream out(filename);
+        if (!out) return false;
+        out << j.dump(2);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool AppState::load_from_file(const std::string& filename) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    try {
+        std::ifstream in(filename);
+        if (!in) return false;
+        json j;
+        in >> j;
+        
+        if (j.contains("prompt")) j.at("prompt").get_to(current_prompt);
+        if (j.contains("model_loaded")) j.at("model_loaded").get_to(model_loaded);
+        if (model_loaded && j.contains("topology")) {
+            j.at("topology").get_to(topology);
+        }
+        if (j.contains("packets")) j.at("packets").get_to(packets);
+        if (j.contains("anomalies")) j.at("anomalies").get_to(anomalies);
+        
+        build_tree();
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 

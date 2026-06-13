@@ -57,13 +57,16 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             // Ensure scroll offset is within bounds
             scroll_offset_ = std::clamp(scroll_offset_, 0, std::max(0, total - max_display));
             
-            int end_idx = total - scroll_offset_;
-            int start_idx = std::max(0, end_idx - max_display);
-            
             uint64_t start_ts = state->packets[0].timestamp_ns;
+            int base_max = state->is_replay_mode ? state->replay_cursor : static_cast<int>(state->packets.size()) - 1;
+            int max_idx = base_max - scroll_offset_;
             
-            for (int i = start_idx; i < end_idx; ++i) {
+            int count = 0;
+            for (int i = max_idx; i >= 0; --i) {
+                if (count >= max_display) break;
+                
                 const auto& p = state->packets[i];
+                count++;
                 
                 std::string id_str = std::to_string(p.sequence_id);
                 if (id_str.size() < 5) id_str = std::string(5 - id_str.size(), ' ') + id_str;
@@ -88,16 +91,10 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                 std::string dev_str = (p.device == 1) ? "CUDA" : "CPU";
                 if (dev_str.size() < 7) dev_str = std::string(7 - dev_str.size(), ' ') + dev_str;
                 
-                // Color code packets: Warnings/Errors in red/yellow, normal in cyan/green
-                Color row_color = Color::White;
+                // Color code packets: Warnings/Errors in red/yellow, normal in green
+                Color row_color = Color::Green;
                 if (p.kind == PacketKind::Anomaly) {
-                    row_color = Color::Red;
-                } else if (p.kind == PacketKind::TokenStart) {
-                    row_color = Color::GreenLight;
-                } else if (p.kind == PacketKind::TokenEnd) {
-                    row_color = Color::YellowLight;
-                } else if (p.kind == PacketKind::TensorStats) {
-                    row_color = Color::CyanLight;
+                    row_color = (p.severity == Severity::Warn) ? Color::Yellow : Color::Red;
                 }
                 
                 rows.push_back(hbox(Elements{
@@ -153,6 +150,8 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             
             return false;
         }
+
+        bool Focusable() const override { return true; }
     };
     
     return std::make_shared<Impl>(state);

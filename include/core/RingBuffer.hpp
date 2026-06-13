@@ -7,9 +7,6 @@
 //  Implementation: std::deque + std::mutex + std::condition_variable.
 //  When full, push() BLOCKS the producer (back-pressure — the model slows
 //  down rather than blowing the heap).
-//
-//  Day 1: this is a STUB (interface only). Full implementation + tests
-//  land on Day 2.
 // =============================================================================
 #pragma once
 
