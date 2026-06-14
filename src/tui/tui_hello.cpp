@@ -34,14 +34,17 @@ std::shared_ptr<spdlog::logger> tui_log() {
     return lg;
 }
 
-// A simple "stat box" for STATUS
 ftxui::Element stat_box(const std::string& label, std::string value) {
     using namespace ftxui;
+    if (value.size() > 300) {
+        value = "..." + value.substr(value.size() - 300);
+    }
     ftxui::Elements rows = {
         text(label) | bold,
-        text(value) | color(Color::Cyan),
+        separatorEmpty(),
+        paragraphAlignLeft(value) | color(Color::Cyan),
     };
-    return vbox(std::move(rows)) | center;
+    return vbox(std::move(rows));
 }
 
 // ASCII art header that uses NerdFont box drawing characters
@@ -96,7 +99,7 @@ int main() {
     hook.set_sink(&sink);
 
     std::thread inference_thread([&]() {
-        state->current_prompt = "Hello, what is the meaning of life?";
+        state->current_prompt = "<|im_start|>user\nHello, what is the meaning of life?<|im_end|>\n<|im_start|>assistant\n";
         std::string model_path = "/home/manish/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf";
         if (const char* env = std::getenv("LLM_TUI_MODEL"); env && *env) {
             model_path = env;
@@ -105,7 +108,14 @@ int main() {
         if (hook.load(model_path, 2048, 0)) {
             // continuously generate to keep TUI alive
             while (running.load()) {
-                hook.generate(state->current_prompt, [&](const std::string& /*token*/) {});
+                {
+                    std::lock_guard<std::recursive_mutex> lock(state->mutex);
+                    state->generated_text = "";
+                }
+                hook.generate(state->current_prompt, [&](const std::string& token) {
+                    std::lock_guard<std::recursive_mutex> lock(state->mutex);
+                    state->generated_text += token;
+                });
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         }
@@ -118,7 +128,9 @@ int main() {
         CreatePanelAttention(state),
         CreatePanelMetrics(state),
         CreatePanelAnomalies(state),
-        Renderer([] { return stat_box("STATUS", "Day 1 OK"); })
+        Renderer([state] { 
+            return stat_box("GENERATION", state->generated_text.empty() ? "Waiting for model..." : state->generated_text); 
+        })
     };
 
     // Decorate panels with borders and highlights
@@ -129,12 +141,21 @@ int main() {
     };
 
     for (size_t i = 0; i < panels.size(); ++i) {
-        auto wrapped = Renderer(panels[i], [i, &focus_index, &panels, &titles] {
+        auto wrapped = Renderer(panels[i], [i, &focus_index, state, &panels, &titles] {
             bool focused = (static_cast<int>(i) == focus_index);
-            return window(text(titles[i]) | (focused ? bold : dim), panels[i]->Render())
-                   | size(WIDTH, EQUAL, 40)
-                   | size(HEIGHT, EQUAL, 24)
+            bool is_fullscreen = (i == 0 && state->topology_fullscreen) || 
+                                 (i == 1 && state->packet_stream_fullscreen) || 
+                                 (i == 2 && state->attention_fullscreen);
+            
+            auto content = window(text(titles[i]) | (focused ? bold : dim), panels[i]->Render())
                    | (focused ? borderHeavy : border);
+                   
+            if (!is_fullscreen) {
+                content = content | size(WIDTH, EQUAL, 40) | size(HEIGHT, EQUAL, 24);
+            } else {
+                content = content | flex;
+            }
+            return content;
         });
         decorated_panels.push_back(wrapped);
     }
@@ -146,10 +167,21 @@ int main() {
     });
 
     auto root = Renderer(main_container, [&] {
+        ftxui::Element content;
+        if (state->topology_fullscreen) {
+            content = decorated_panels[0]->Render();
+        } else if (state->packet_stream_fullscreen) {
+            content = decorated_panels[1]->Render();
+        } else if (state->attention_fullscreen) {
+            content = decorated_panels[2]->Render();
+        } else {
+            content = main_container->Render();
+        }
+        
         return vbox({
             header(),
             separator(),
-            main_container->Render(),
+            content | flex,
             separator(),
             footer(keypresses.load()),
         });

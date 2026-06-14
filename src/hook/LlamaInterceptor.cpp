@@ -272,30 +272,42 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 
                 // Extract 4x4 attention slice from kq_soft_max activations if available
                 if (base_name == "kq_soft_max" && t->ne[0] > 0 && t->ne[1] > 0) {
-                    int64_t stride_r = t->ne[0];
-                    int r_max = std::min(static_cast<int64_t>(4), static_cast<int64_t>(t->ne[1]));
-                    int c_max = std::min(static_cast<int64_t>(4), static_cast<int64_t>(t->ne[0]));
+                    int64_t n_kv = t->ne[0];
+                    int64_t n_q = t->ne[1];
+                    int r_max = std::min(static_cast<int64_t>(7), n_q);
+                    int c_max = std::min(static_cast<int64_t>(7), n_kv);
                     
-                    float patch_max = 1e-5f;
+                    int r_start = std::max(static_cast<int64_t>(0), n_q - 7);
+                    int c_start = std::max(static_cast<int64_t>(0), n_kv - 7);
+                    
+                    float patch_max = 0.0f;
                     for (int r = 0; r < r_max; ++r) {
                         for (int c = 0; c < c_max; ++c) {
-                            patch_max = std::max(patch_max, std::abs(data[r * stride_r + c]));
+                            patch_max = std::max(patch_max, std::abs(data[(r_start + r) * n_kv + (c_start + c)]));
                         }
+                    }
+                    if (patch_max < 1e-12f) {
+                        patch_max = 1.0f;
                     }
                     
                     // zero out first
                     std::fill(std::begin(p.attn_patch), std::end(p.attn_patch), 0.0f);
                     
+                    // Anchor to the bottom-right of the 7x7 patch buffer
+                    int patch_r_start = 7 - r_max;
+                    int patch_c_start = 7 - c_max;
+                    
                     for (int r = 0; r < r_max; ++r) {
                         for (int c = 0; c < c_max; ++c) {
-                            p.attn_patch[r * 4 + c] = std::abs(data[r * stride_r + c]) / patch_max;
+                            p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = 
+                                std::abs(data[(r_start + r) * n_kv + (c_start + c)]) / patch_max;
                         }
                     }
                 }
                 dispatch(p, sink_, detector_);
                 
                 // Artificially slow down execution so the TUI can render the active node progression
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
     }

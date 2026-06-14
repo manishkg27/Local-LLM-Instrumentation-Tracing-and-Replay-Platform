@@ -48,12 +48,15 @@ struct AppState {
 
     // TUI view options
     bool attention_fullscreen = false;
+    bool topology_fullscreen = false;
+    bool packet_stream_fullscreen = false;
     float attention_contrast = 1.0f;
     std::string status_message = "Press [:] to type command, [?] or [:help] for commands";
 
     // Application Control
     bool capture_paused = false;
     int target_layer_id = -1; // Explicitly selected layer to filter other panels by
+    LayerType target_layer_type = LayerType::Unknown;
     int breakpoint_layer_id = -1; // Auto-pause if this layer is hit
     
     // Replay Mode Stepping

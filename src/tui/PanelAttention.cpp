@@ -11,7 +11,15 @@ namespace llm_tui {
 // ---------------------------------------------------------------------------
 // Helper: split a string by whitespace into word tokens.
 // ---------------------------------------------------------------------------
-static std::vector<std::string> split_words(const std::string& s) {
+static std::vector<std::string> split_words(std::string s) {
+    std::string u2581 = "\xe2\x96\x81";
+    size_t pos = 0;
+    while ((pos = s.find(u2581, pos)) != std::string::npos) {
+        s.replace(pos, u2581.length(), " ");
+        pos += 1;
+    }
+    std::replace(s.begin(), s.end(), '\n', ' ');
+
     std::vector<std::string> words;
     std::istringstream iss(s);
     std::string w;
@@ -60,26 +68,22 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             }
 
             // ------------------------------------------------------------------
-            // 2. Build token labels from the current prompt
+            // 2. Build token labels from the current prompt + generated text
             // ------------------------------------------------------------------
-            std::vector<std::string> tokens = split_words(state->current_prompt);
+            std::vector<std::string> tokens = split_words(state->current_prompt + state->generated_text);
             if (tokens.empty()) {
-                // Fallback placeholder labels when no prompt is available
-                tokens = {"T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7",
-                           "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15"};
+                tokens = {"T0", "T1", "T2", "T3"};
             }
-            // Pad or truncate to exactly 16 labels
-            while (tokens.size() < 16) {
-                tokens.push_back("T" + std::to_string(tokens.size()));
+            while (tokens.size() < 7) {
+                tokens.insert(tokens.begin(), " ");
             }
-            if (tokens.size() > 16) tokens.resize(16);
 
             // ------------------------------------------------------------------
             // 3. Populate the 16×16 attention matrix
             // ------------------------------------------------------------------
             float full_matrix[16][16] = {0.0f};
             uint64_t time_ns = 0;
-            float attn_data[16] = {0.0f};
+            float attn_data[49] = {0.0f};
             bool has_patch = false;
 
             int max_idx = state->is_replay_mode
@@ -93,11 +97,22 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
                     if (it.kind == PacketKind::TensorStats &&
                         it.layer_type == LayerType::AttentionSelf) {
                         if (target != -1 && it.layer_id != target) continue;
-                        for (int j = 0; j < 16; ++j) {
-                            attn_data[j] = it.attn_patch[j];
+                        
+                        bool has_data = false;
+                        for (int j = 0; j < 49; ++j) {
+                            if (it.attn_patch[j] > 0.0f) {
+                                has_data = true;
+                                break;
+                            }
                         }
-                        has_patch = true;
-                        break;
+                        
+                        if (has_data) {
+                            for (int j = 0; j < 49; ++j) {
+                                attn_data[j] = it.attn_patch[j];
+                            }
+                            has_patch = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -106,26 +121,27 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             for (int r = 0; r < 16; ++r) {
                 for (int c = 0; c < 16; ++c) {
                     float val = 0.0f;
-                    if (has_patch && r < 4 && c < 4) {
-                        val = attn_data[r * 4 + c];
+                    if (has_patch && r < 7 && c < 7) {
+                        val = attn_data[r * 7 + c];
                     }
                     full_matrix[r][c] = std::clamp(val, 0.0f, 1.0f);
                 }
             }
 
             // ------------------------------------------------------------------
-            // 4. Determine the viewport window (7×7 slice)
+            // 4. Determine the viewport window
             // ------------------------------------------------------------------
-            constexpr int kView = 4;
-            int view_r0 = std::clamp(pan_y_, 0, 16 - kView);
-            int view_c0 = std::clamp(pan_x_, 0, 16 - kView);
+            int kView = state->attention_fullscreen ? 7 : 4;
+            int view_r0 = state->attention_fullscreen ? 0 : 3;
+            int view_c0 = state->attention_fullscreen ? 0 : 3;
 
             // Collect visible token labels and compute uniform cell width
             std::vector<std::string> col_labels, row_labels;
+            int start_idx = static_cast<int>(tokens.size()) - kView;
             for (int c = 0; c < kView; ++c)
-                col_labels.push_back(tokens[view_c0 + c]);
+                col_labels.push_back(tokens[start_idx + c]);
             for (int r = 0; r < kView; ++r)
-                row_labels.push_back(tokens[view_r0 + r]);
+                row_labels.push_back(tokens[start_idx + r]);
 
             // Cell width = max label width, clamped to [4, 10] for sanity
             int cell_w = 2;
@@ -229,8 +245,6 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             Elements help = {
                 text("[Focus + F]: Open Fullscreen") | dim,
                 text("  ") | dim,
-                text("[Arrows/(h,j,k,l)]: Pan Matrix") | dim,
-                text("  ") | dim,
                 text("[+/-]: Change Weight Contrast") | dim,
             };
 
@@ -268,20 +282,6 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
                 state->attention_fullscreen = !state->attention_fullscreen;
                 return true;
-            }
-
-            // Viewport Panning (hjkl or arrows)
-            if (event == ftxui::Event::Character('h') || event == ftxui::Event::ArrowLeft) {
-                if (pan_x_ > 0) { pan_x_--; return true; }
-            }
-            if (event == ftxui::Event::Character('l') || event == ftxui::Event::ArrowRight) {
-                if (pan_x_ < 9) { pan_x_++; return true; }
-            }
-            if (event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) {
-                if (pan_y_ > 0) { pan_y_--; return true; }
-            }
-            if (event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) {
-                if (pan_y_ < 9) { pan_y_++; return true; }
             }
 
             return false;

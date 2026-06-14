@@ -13,6 +13,7 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
         std::weak_ptr<AppState> state_;
         bool freeze_scroll_ = false;
         int scroll_offset_ = 0; // scroll offset from the bottom (0 = show latest)
+        int frozen_total_ = 0;
         
     public:
         Impl(std::weak_ptr<AppState> state) : state_(state) {}
@@ -58,7 +59,8 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             scroll_offset_ = std::clamp(scroll_offset_, 0, std::max(0, total - max_display));
             
             uint64_t start_ts = state->packets[0].timestamp_ns;
-            int base_max = state->is_replay_mode ? state->replay_cursor : static_cast<int>(state->packets.size()) - 1;
+            int base_max = state->is_replay_mode ? state->replay_cursor 
+                           : (freeze_scroll_ ? std::min(frozen_total_ - 1, total - 1) : total - 1);
             int max_idx = base_max - scroll_offset_;
             
             int count = 0;
@@ -111,7 +113,7 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             rows.push_back(hbox(Elements{
                 text("Packets: ") | dim,
                 text(std::to_string(total)) | color(Color::Cyan),
-                text("  [Space] Freeze  [j/k or Up/Down] Scroll (when frozen)") | dim
+                text("  [Space] Freeze  [j/k] Scroll  [F] Fullscreen") | dim
             }) | center);
             
             return vbox(std::move(rows));
@@ -129,10 +131,16 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             std::lock_guard<std::recursive_mutex> lock(state->mutex);
             int total = static_cast<int>(state->packets.size());
             
+            if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
+                state->packet_stream_fullscreen = !state->packet_stream_fullscreen;
+                return true;
+            }
             if (event == ftxui::Event::Character(' ')) {
                 freeze_scroll_ = !freeze_scroll_;
                 if (!freeze_scroll_) {
                     scroll_offset_ = 0;
+                } else {
+                    frozen_total_ = static_cast<int>(state->packets.size());
                 }
                 return true;
             }

@@ -68,13 +68,13 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
                 // 6. Focus/selected state
                 bool is_selected = (i == state->selected_node_idx);
                 if (is_selected) {
-                    row = row | bold | color(Color::White) | bgcolor(Color::Blue);
+                    row = row | bold | color(Color::White) | bgcolor(Color::Blue) | focus;
                 }
                 
                 tree_elements.push_back(row);
             }
             
-            return vbox(std::move(tree_elements));
+            return vscroll_indicator(frame(vbox(std::move(tree_elements))));
         }
         
         bool OnEvent(ftxui::Event event) override {
@@ -86,6 +86,11 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
             
             if (state->visible_nodes.empty()) {
                 return false;
+            }
+            
+            if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
+                state->topology_fullscreen = !state->topology_fullscreen;
+                return true;
             }
             
             int total = static_cast<int>(state->visible_nodes.size());
@@ -101,6 +106,7 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
             if (event == ftxui::Event::Character(' ') ) {
                 auto& node = state->visible_nodes[state->selected_node_idx];
                 state->target_layer_id = node->layer_id;
+                state->target_layer_type = node->type;
                 return true;
             }
             if (event == ftxui::Event::Return) {

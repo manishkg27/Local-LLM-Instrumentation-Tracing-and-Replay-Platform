@@ -127,20 +127,20 @@ struct TelemetryPacket {
     float         sigma;          // std-dev (for outlier z-score)
     std::int32_t  padding;        // explicit padding to keep alignment 8B
 
-    // ----- 16 bytes (optional attention window) -----
-    // Up to 4x4 = 16 floats. Larger matrices are streamed through the side
-    // channel; we just keep a representative 4x4 patch here for the TUI.
-    float         attn_patch[4 * 4];
+    // ----- 196 bytes (optional attention window) -----
+    // Up to 7x7 = 49 floats. Larger matrices are streamed through the side
+    // channel; we just keep a representative 7x7 patch here for the TUI.
+    float         attn_patch[7 * 7];
 };
 // TelemetryPacket is a *target* of 80 bytes (one cache line) but the actual
 // layout can be a bit larger once the compiler inserts alignment padding for
-// the trailing attn_patch[16] array. Allow any size in [80, 136] bytes so
+// the trailing attn_patch[49] array. Allow any size in [80, 300] bytes so
 // changing field order or alignment later doesn't trigger a recompile storm
 // for every downstream consumer (RingBuffer, TUI, replay tool, ...).
 static_assert(sizeof(TelemetryPacket) >= 80,
               "TelemetryPacket shrunk below its 80-byte design target");
-static_assert(sizeof(TelemetryPacket) <= 136,
-              "TelemetryPacket grew above the 136-byte budget");
+static_assert(sizeof(TelemetryPacket) <= 300,
+              "TelemetryPacket grew above the 300-byte budget");
 
 // Helper: build a "blank" packet
 inline TelemetryPacket make_packet(PacketKind k, std::uint32_t seq = 0) {

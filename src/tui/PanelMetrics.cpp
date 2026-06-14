@@ -24,16 +24,21 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
             
             int target_layer = state->target_layer_id;
             if (target_layer == -1) {
-                return text("Press [Space] in Topology to select a layer") | dim | center;
+                target_layer = state->active_layer_id;
+            }
+            if (target_layer == -1) {
+                return text("Waiting for execution or press [Space] to select") | dim | center;
             }
             
             std::string layer_name = "Layer " + std::to_string(target_layer);
-            LayerType layer_type = LayerType::Unknown;
+            LayerType layer_type = (state->target_layer_id != -1) ? state->target_layer_type : LayerType::Unknown;
             // Best-effort to find the name/type
             for (const auto& node : state->visible_nodes) {
-                if (node->layer_id == target_layer && node->type != LayerType::Unknown) {
+                if (node->layer_id == target_layer && (layer_type == LayerType::Unknown || node->type == layer_type)) {
                     layer_name = node->name;
-                    layer_type = node->type;
+                    if (layer_type == LayerType::Unknown && node->type != LayerType::Unknown) {
+                        layer_type = node->type;
+                    }
                 }
             }
             
@@ -53,16 +58,22 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
                 for (int i = max_idx; i >= 0; --i) {
                     const auto& it = state->packets[i];
                     if (it.layer_id == target_layer) {
-                        if (it.kind == PacketKind::LayerLatency && !has_latency) {
-                            latency_us = it.latency_us;
-                            has_latency = true;
-                        } else if (it.kind == PacketKind::TensorStats && !has_stats) {
-                            sparsity = it.sparsity;
-                            mean = it.mean;
-                            max_abs = it.max_abs;
-                            shape = it.shape;
-                            has_stats = true;
-                        } else if (it.kind == PacketKind::Topology && !has_topology) {
+                        // If we specifically requested a layer type (e.g., MLP), enforce it
+                        bool type_matches = (state->target_layer_id == -1 || state->target_layer_type == LayerType::Unknown || it.layer_type == state->target_layer_type);
+                        
+                        if (type_matches) {
+                            if (it.kind == PacketKind::LayerLatency && !has_latency) {
+                                latency_us = it.latency_us;
+                                has_latency = true;
+                            } else if (it.kind == PacketKind::TensorStats && !has_stats) {
+                                sparsity = it.sparsity;
+                                mean = it.mean;
+                                max_abs = it.max_abs;
+                                shape = it.shape;
+                                has_stats = true;
+                            }
+                        }
+                        if (it.kind == PacketKind::Topology && !has_topology) {
                             shape = it.shape;
                             has_topology = true;
                         }
