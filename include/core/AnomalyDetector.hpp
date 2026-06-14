@@ -1,12 +1,7 @@
-// =============================================================================
 //  AnomalyDetector.hpp
 //  -----------------------------------------------------------------------------
 //  Inspects TelemetryPackets and flags numerical anomalies.
-//
-//  Day 1: STUB - prints a debug line for TensorStats packets.
-//  Day 2: evaluate() runs all 4 rule stubs and appends to a thread-safe
-//         AnomalyLedger (read by the TUI Panel 5 on Day 5).
-//  Day 5: rules are real:
+//rules are real:
 //         - OutlierFeature   (max(|x|) > k * sigma)
 //         - ClippingRisk     (saturating at fp16/fp32 max)
 //         - DeadLayer        (sparsity > 0.9 with no movement)
@@ -18,8 +13,7 @@
 //      - The ledger is guarded by a std::mutex; one entry per anomaly.
 //      - evaluate() and ledger() are the only public mutators / readers.
 //      - They are intended to be called from the consumer thread that drains
-//        the RingBuffer (D6) but are safe to call from anywhere.
-// =============================================================================
+//        the RingBuffer but are safe to call from anywhere.
 #pragma once
 
 #include <spdlog/spdlog.h>
@@ -43,7 +37,7 @@ struct LedgerEntry {
     AnomalyCode    code         = AnomalyCode::None;
     std::int32_t   layer_id     = -1;
     std::uint64_t  timestamp_ns = 0;
-    std::string    message;          // human-readable
+    std::string    message;         
 };
 
 class AnomalyDetector {
@@ -63,12 +57,10 @@ public:
     // Reset the ledger (e.g. between sessions). Tests use this.
     void clear();
 
-    // Configuration knobs (Day 5 will use these; exposed now so tests can
-    // tune them).
     struct Config {
-        float outlier_k          = 20.0f;  // |x| > k * sigma  -> OutlierFeature
-                                               // LLMs produce "massive activations" (SwiGLU/RMSNorm)
-                                               // that routinely exceed 6σ; 20σ filters false positives.
+        float outlier_k          = 50.0f;  // |x| > k * sigma  -> OutlierFeature
+                                               // RMSNorm forces sigma=1.0, and modern LLMs (SwiGLU) 
+                                               // use "massive activations" up to ~50.0 for routing.
         float clipping_fp16_max  = 65504.0f;
         float clipping_fp32_max  = 3.4e38f;
         float dead_sparsity      = 0.90f;  // sparsity > dead_sparsity  -> DeadLayer
