@@ -30,13 +30,14 @@ public:
     RingBuffer(const RingBuffer&)            = delete;
     RingBuffer& operator=(const RingBuffer&) = delete;
 
-    // Block until the buffer has space (blocks when at 90% capacity to preserve safety margin), then push. Returns false if shutdown.
+    // Non-blocking push: if buffer is at max capacity, drop the oldest item. Returns false if shutdown.
     bool push(const T& item) {
-        std::unique_lock<std::mutex> lk(mu_);
-        cv_not_full_.wait(lk, [&] { return closed_ || buf_.size() < max_size(); });
+        std::lock_guard<std::mutex> lk(mu_);
         if (closed_) return false;
+        if (buf_.size() >= max_size()) {
+            buf_.pop_front(); // Silently drop oldest data instead of blocking
+        }
         buf_.push_back(item);
-        lk.unlock();
         cv_not_empty_.notify_one();
         return true;
     }

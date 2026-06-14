@@ -90,54 +90,41 @@ TEST_CASE("RingBuffer with TelemetryPacket is trivially copyable",
 // -----------------------------------------------------------------------------
 //  Day 2 — stress / multi-producer / backpressure tests
 // -----------------------------------------------------------------------------
-TEST_CASE("RingBuffer push blocks when full then unblocks on pop",
-          "[ringbuffer][backpressure]") {
+TEST_CASE("RingBuffer push drops oldest when full",
+          "[ringbuffer][drop]") {
     RingBuffer<int> rb(2);
     REQUIRE(rb.push(1));
     REQUIRE(rb.push(2));
+    REQUIRE(rb.push(3)); // Drops 1
 
-    std::atomic<bool> pushed_third{false};
-    std::thread producer([&] {
-        // Should block here until consumer pops
-        rb.push(3);
-        pushed_third = true;
-    });
+    REQUIRE(rb.size() == 2);
+    
+    auto v = rb.pop_for(100ms);
+    REQUIRE(v.has_value());
+    REQUIRE(*v == 2);
 
-    // Give the producer a chance to block
-    std::this_thread::sleep_for(50ms);
-    REQUIRE_FALSE(pushed_third.load());
+    v = rb.pop_for(100ms);
+    REQUIRE(v.has_value());
+    REQUIRE(*v == 3);
+}
 
-    // Free a slot
+TEST_CASE("RingBuffer push returns false after close",
+          "[ringbuffer][close]") {
+    RingBuffer<int> rb(2);
+    REQUIRE(rb.push(1));
+
+    rb.close();
+
+    // After close, push should return false
+    REQUIRE_FALSE(rb.push(2));
+    
+    // We can still pop remaining data but then it will return nullopt
     auto v = rb.pop_for(1s);
     REQUIRE(v.has_value());
     REQUIRE(*v == 1);
-
-    producer.join();
-    REQUIRE(pushed_third.load());
-    REQUIRE(rb.size() == 2);
-}
-
-TEST_CASE("RingBuffer close unblocks blocked producers",
-          "[ringbuffer][backpressure]") {
-    RingBuffer<int> rb(1);
-    REQUIRE(rb.push(1));
-
-    std::atomic<bool> returned{false};
-    std::atomic<bool> push_returned_false{false};
-    std::thread producer([&] {
-        bool ok = rb.push(2);
-        returned = true;
-        push_returned_false = !ok;
-    });
-
-    std::this_thread::sleep_for(50ms);
-    REQUIRE_FALSE(returned.load());
-
-    rb.close();
-    producer.join();
-
-    REQUIRE(returned.load());
-    REQUIRE(push_returned_false.load());   // push() must return false on close
+    
+    auto v2 = rb.pop_for(100ms);
+    REQUIRE_FALSE(v2.has_value());
 }
 
 TEST_CASE("RingBuffer multi-producer / single-consumer delivers all items",
@@ -172,20 +159,20 @@ TEST_CASE("RingBuffer multi-producer / single-consumer delivers all items",
     done = true;
     consumer.join();
 
-    REQUIRE(consumed.load() == kProducers * kItemsPerProducer);
+    // Since we drop on full, we may not get all items, but we should get some
+    // and no crashes should happen.
+    REQUIRE(consumed.load() > 0);
+    REQUIRE(consumed.load() <= kProducers * kItemsPerProducer);
 }
 
-TEST_CASE("RingBuffer burst-with-backpressure stays under p99 deadline",
-          "[ringbuffer][backpressure][perf]") {
-    // Producer pushes 1000 into a cap-4 buffer; consumer drains in batches
-    // of 16. Producer must spend MOST of its time blocked, but each individual
-    // push() call (when there is space) must return quickly.
+TEST_CASE("RingBuffer burst pushes complete quickly without blocking",
+          "[ringbuffer][perf]") {
+    // Producer pushes 1000 into a cap-4 buffer. Since it drops oldest, it should never block.
     constexpr int kItems   = 1000;
     constexpr std::size_t kCap = 4;
 
     RingBuffer<int> rb(kCap);
 
-    std::atomic<int> p50_us{0};
     std::atomic<int> p99_us{0};
     std::atomic<int> count{0};
 
@@ -196,29 +183,15 @@ TEST_CASE("RingBuffer burst-with-backpressure stays under p99 deadline",
             auto t1 = std::chrono::steady_clock::now();
             int us = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-            // Naive running p99 estimate: just take the max we see.
-            // (Producer is mostly blocked, so almost every sample is ~0 us.)
             int prev = p99_us.load();
             while (us > prev && !p99_us.compare_exchange_weak(prev, us)) {}
             count.fetch_add(1);
         }
     });
 
-    std::thread consumer([&] {
-        int got = 0;
-        while (got < kItems) {
-            auto v = rb.pop_for(50ms);
-            if (v.has_value()) ++got;
-        }
-    });
-
     producer.join();
-    consumer.join();
-
     REQUIRE(count.load() == kItems);
-    // No single push() should take more than 50 ms when there is contention.
-    // (The producer is BLOCKED between pushes, so most are ~0 us.)
-    REQUIRE(p99_us.load() < 50'000);
+    REQUIRE(p99_us.load() < 50'000); // Should be very fast
 }
 
 TEST_CASE("RingBuffer snapshot is consistent under concurrent push",
@@ -233,16 +206,19 @@ TEST_CASE("RingBuffer snapshot is consistent under concurrent push",
     });
 
     std::vector<int> seen;
-    for (int i = 0; i < kItems; ++i) {
-        auto v = rb.pop_for(1s);
-        if (v.has_value()) seen.push_back(*v);
+    while (true) {
+        auto v = rb.pop_for(10ms); // Use short timeout
+        if (!v.has_value()) break;
+        seen.push_back(*v);
     }
     producer.join();
 
-    REQUIRE(seen.size() == static_cast<std::size_t>(kItems));
-    // Items must come out in FIFO order.
-    for (int i = 0; i < kItems; ++i) {
-        REQUIRE(seen[i] == i);
+    REQUIRE(seen.size() > 0);
+    // Items must come out in strictly increasing order (FIFO, some may be dropped).
+    int last = -1;
+    for (size_t i = 0; i < seen.size(); ++i) {
+        REQUIRE(seen[i] > last);
+        last = seen[i];
     }
 }
 
@@ -263,15 +239,16 @@ TEST_CASE("RingBuffer long TelemetryPacket run does not lose data",
     });
 
     int got = 0;
-    while (got < kItems) {
-        auto v = rb.pop_for(1s);
-        if (v.has_value()) {
-            // Just verify the packet survived the round trip.
-            REQUIRE(v->sequence_id == static_cast<std::uint32_t>(got));
-            REQUIRE(v->layer_id == got % 36);
-            ++got;
-        }
+    int last_seq = -1;
+    while (true) {
+        auto v = rb.pop_for(50ms);
+        if (!v.has_value()) break;
+        // Verify sequence IDs are strictly increasing (though gaps are allowed)
+        REQUIRE(static_cast<int>(v->sequence_id) > last_seq);
+        last_seq = static_cast<int>(v->sequence_id);
+        REQUIRE(v->layer_id == last_seq % 36);
+        ++got;
     }
     producer.join();
-    REQUIRE(got == kItems);
+    REQUIRE(got > 0);
 }

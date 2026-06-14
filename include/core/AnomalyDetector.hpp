@@ -66,7 +66,9 @@ public:
     // Configuration knobs (Day 5 will use these; exposed now so tests can
     // tune them).
     struct Config {
-        float outlier_k          = 6.0f;   // |x| > k * sigma  -> OutlierFeature
+        float outlier_k          = 20.0f;  // |x| > k * sigma  -> OutlierFeature
+                                               // LLMs produce "massive activations" (SwiGLU/RMSNorm)
+                                               // that routinely exceed 6σ; 20σ filters false positives.
         float clipping_fp16_max  = 65504.0f;
         float clipping_fp32_max  = 3.4e38f;
         float dead_sparsity      = 0.90f;  // sparsity > dead_sparsity  -> DeadLayer

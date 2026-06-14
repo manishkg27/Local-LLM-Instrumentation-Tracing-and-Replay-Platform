@@ -39,9 +39,9 @@ TEST_CASE("AnomalyDetector starts empty", "[anomaly]") {
 TEST_CASE("AnomalyDetector fires OutlierFeature when |x|>k*sigma", "[anomaly]") {
     AnomalyDetector d;
     d.set_config({.log_to_stderr = false});
-    // sigma=1.0, k=6.0 -> threshold 6.0.  Use 7.0 to trigger Outlier only
-    // (max_abs=7 << 65504 fp16 clipping limit, sparsity=0.1 < 0.9 dead).
-    d.evaluate(make_tensor(3, /*max=*/7.0f, /*sigma=*/1.0f, /*sparsity=*/0.1f));
+    // Default k=20.0, sigma=1.0 -> threshold 20.0.  Use 25.0 to trigger Outlier
+    // only (max_abs=25 << 65504 fp16 clipping limit, sparsity=0.1 < 0.9 dead).
+    d.evaluate(make_tensor(3, /*max=*/25.0f, /*sigma=*/1.0f, /*sparsity=*/0.1f));
     REQUIRE(d.count() == 1);
     auto lg = d.ledger();
     REQUIRE(lg[0].code == AnomalyCode::OutlierFeature);
@@ -107,7 +107,7 @@ TEST_CASE("AnomalyDetector is silent on LayerLatency until warmed up",
 TEST_CASE("AnomalyDetector clear() resets everything", "[anomaly]") {
     AnomalyDetector d;
     d.set_config({.log_to_stderr = false});
-    d.evaluate(make_tensor(0, /*max=*/7.0f, /*sigma=*/1.0f, /*sparsity=*/0.1f));
+    d.evaluate(make_tensor(0, /*max=*/25.0f, /*sigma=*/1.0f, /*sparsity=*/0.1f));
     d.evaluate(make_tensor(1, /*max=*/1.0f, /*sigma=*/1.0f, /*sparsity=*/0.95f));
     REQUIRE(d.count() == 2);
     d.clear();
@@ -122,7 +122,7 @@ TEST_CASE("AnomalyDetector clear() resets everything", "[anomaly]") {
 TEST_CASE("AnomalyDetector config can be queried", "[anomaly]") {
     AnomalyDetector d;
     auto c = d.config();
-    REQUIRE(c.outlier_k == 6.0f);
+    REQUIRE(c.outlier_k == 20.0f);
     REQUIRE(c.dead_sparsity == 0.9f);
     REQUIRE(c.hotspot_factor == 3.0f);
 
