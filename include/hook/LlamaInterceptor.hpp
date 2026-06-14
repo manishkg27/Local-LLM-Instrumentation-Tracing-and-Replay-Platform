@@ -3,11 +3,6 @@
 //  -----------------------------------------------------------------------------
 //  Thin RAII wrapper around llama.cpp's public C API.
 //
-//  Day 1: load a GGUF model, decode 1 token, print layer topology.
-//  Day 2: holds an AnomalyDetector and (optionally) pushes TelemetryPackets
-//         to a RingBuffer. The first end-to-end smoke test of the data path.
-//  Day 3: full ModelTopology + per-layer latency packets wired here.
-//
 //  We do NOT modify llama.cpp source. We just call its public C API and
 //  add instrumentation around the calls.
 // =============================================================================

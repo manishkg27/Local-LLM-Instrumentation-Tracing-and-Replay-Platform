@@ -105,12 +105,9 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
 
             for (int r = 0; r < 16; ++r) {
                 for (int c = 0; c < 16; ++c) {
-                    float dist = static_cast<float>(std::abs(r - c));
-                    float val = std::exp(-dist * 0.4f);
-                    val += 0.15f * std::sin(r * 0.4f - c * 0.3f + t * 6.28f);
-                    if (has_patch && r >= 6 && r < 10 && c >= 6 && c < 10) {
-                        int pr = r - 6, pc = c - 6;
-                        val = 0.5f * val + 0.5f * attn_data[pr * 4 + pc];
+                    float val = 0.0f;
+                    if (has_patch && r < 4 && c < 4) {
+                        val = attn_data[r * 4 + c];
                     }
                     full_matrix[r][c] = std::clamp(val, 0.0f, 1.0f);
                 }
@@ -119,7 +116,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             // ------------------------------------------------------------------
             // 4. Determine the viewport window (7×7 slice)
             // ------------------------------------------------------------------
-            constexpr int kView = 7;
+            constexpr int kView = 4;
             int view_r0 = std::clamp(pan_y_, 0, 16 - kView);
             int view_c0 = std::clamp(pan_x_, 0, 16 - kView);
 

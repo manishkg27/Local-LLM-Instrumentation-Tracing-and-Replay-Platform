@@ -1,42 +1,5 @@
 // =============================================================================
 //  tui_hello.cpp
-//  -----------------------------------------------------------------------------
-//  Day 1 — Person 2 deliverable.
-//
-//  Renders a minimal but pretty FTXUI window with:
-//    * a NerdFont-bordered panel (╔═╗║╚╝)
-//    * a vim-style keybinding hint footer ([h/j/k/l] nav, [q] quit, [Tab] focus)
-//    * a count of keypresses to prove the event loop is alive
-//
-//  The purpose is to confirm:
-//    * FTXUI + spdlog + fmt link cleanly via vcpkg
-//    * the terminal renders NerdFont glyphs (JetBrainsMono Nerd Font etc.)
-//    * the keystroke loop runs at a sane frame rate
-//
-//  Run it and try:  j  j  k  l  Tab  h  q   (q to quit)
-//
-//  Keybinding model
-//  -----------------
-//  The TUI renders a 3+3 grid:
-//
-//      row 0:  [1. MODEL TOPOLOGY] [2. LIVE PACKET STREAM] [3. ATTENTION MATRIX]
-//      row 1:  [4. RUNTIME METRICS] [5. ANOMALY LEDGER]   [6. STATUS]
-//
-//  so the focus cursor is 2-D: (row, col).
-//    h / ←  move left  within the SAME row (col -1, wrap 2→0)
-//    l / →  move right within the SAME row (col +1, wrap 0→2)
-//    j / ↓  jump to the OTHER row, same column (row toggles 0↔1)
-//    k / ↑  jump to the OTHER row, same column (same as j here — only 2 rows)
-//    Tab    cycle through all 6 in linear order (1→2→3→4→5→6→1…)
-//    q/Esc  quit
-//    + / -  grow / shrink the "4. RUNTIME METRICS" progress bar
-//
-//  Compatibility note:
-//  The vcpkg-installed FTXUI v5 only exposes `vbox(Elements)` (and same for
-//  `hbox`), where `Elements` is a `std::vector<Element>`. The variadic
-//  `vbox({...})` form used in many tutorials requires the optional
-//  `take_any_args.hpp` shim, which is not exposed by default. We therefore
-//  build the vector explicitly.
 // =============================================================================
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -56,6 +19,14 @@
 #include <thread>
 #include <vector>
 
+#include "tui/AppState.hpp"
+#include "tui/PanelTopology.hpp"
+#include "tui/PanelPacketStream.hpp"
+#include "tui/PanelAttention.hpp"
+#include "tui/PanelMetrics.hpp"
+#include "tui/PanelAnomalies.hpp"
+#include "hook/LlamaInterceptor.hpp"
+
 namespace {
 std::shared_ptr<spdlog::logger> tui_log() {
     static auto lg = spdlog::stdout_color_mt("tui");
@@ -63,30 +34,14 @@ std::shared_ptr<spdlog::logger> tui_log() {
     return lg;
 }
 
-// A simple "stat box" with a label, a number, and a NerdFont progress bar.
-ftxui::Element stat_box(const std::string& label, std::string value,
-                        int progress_0_to_10) {
+// A simple "stat box" for STATUS
+ftxui::Element stat_box(const std::string& label, std::string value) {
     using namespace ftxui;
-    static constexpr std::string_view bars[11] = {
-        "▱▱▱▱▱▱▱▱▱▱",  // 0
-        "▰▱▱▱▱▱▱▱▱▱",  // 1
-        "▰▰▱▱▱▱▱▱▱▱",
-        "▰▰▰▱▱▱▱▱▱▱",
-        "▰▰▰▰▱▱▱▱▱▱",
-        "▰▰▰▰▰▱▱▱▱▱",
-        "▰▰▰▰▰▰▱▱▱▱",
-        "▰▰▰▰▰▰▰▱▱▱",
-        "▰▰▰▰▰▰▰▰▱▱",
-        "▰▰▰▰▰▰▰▰▰▱",
-        "▰▰▰▰▰▰▰▰▰▰",  // 10
-    };
-    int p = std::clamp(progress_0_to_10, 0, 10);
     ftxui::Elements rows = {
         text(label) | bold,
         text(value) | color(Color::Cyan),
-        text(std::string(bars[p])),
     };
-    return vbox(std::move(rows)) | border | size(WIDTH, EQUAL, 24);
+    return vbox(std::move(rows)) | center;
 }
 
 // ASCII art header that uses NerdFont box drawing characters
@@ -123,137 +78,161 @@ ftxui::Element footer(int keypresses) {
 
 int main() {
     using namespace ftxui;
+    using namespace llm_tui;
     tui_log()->info("tui_hello (Day 1) starting");
 
     auto screen = ScreenInteractive::TerminalOutput();
 
     // ---- Shared state -------------------------------------------------
+    auto state = std::make_shared<AppState>();
+
     std::atomic<int> keypresses{0};
-    std::atomic<int> progress{3};      // 0..10 (drives the 4. RUNTIME METRICS bar)
-    // Focus is 2-D because the TUI is a 3+3 grid.
-    //   row ∈ {0, 1},  col ∈ {0, 1, 2}
-    //   linear index fi = row*3 + col  ∈ {0, 1, 2, 3, 4, 5}
-    std::atomic<int> focus_row{0};
-    std::atomic<int> focus_col{0};
     std::atomic<bool> running{true};
+    int focus_index = 0;
 
-    // ---- Renderer -----------------------------------------------------
-    auto renderer = Renderer([&] {
-        const int kp  = keypresses.load();
-        const int pr  = progress.load();
-        const int fi  = focus_row.load() * 3 + focus_col.load();
+    // ---- Interceptor & Telemetry --------------------------------------
+    llm_tui::RingBuffer<llm_tui::TelemetryPacket> sink(1024);
+    llm_tui::LlamaInterceptor hook;
+    hook.set_sink(&sink);
 
-        ftxui::Elements panel_row1 = {
-            stat_box("1. MODEL TOPOLOGY",
-                     fi == 0 ? "▶ Active" : "idle", 6) |
-                (fi == 0 ? borderHeavy : border),
-            stat_box("2. LIVE PACKET STREAM",
-                     fi == 1 ? "▶ Active" : "idle", 4) |
-                (fi == 1 ? borderHeavy : border),
-            stat_box("3. ATTENTION MATRIX",
-                     fi == 2 ? "▶ Active" : "idle", 7) |
-                (fi == 2 ? borderHeavy : border),
-        };
-        ftxui::Elements panel_row2 = {
-            stat_box("4. RUNTIME METRICS",
-                     fi == 3 ? "▶ Active" : "idle", pr) |
-                (fi == 3 ? borderHeavy : border),
-            stat_box("5. ANOMALY LEDGER",
-                     fi == 4 ? "▶ Active" : "idle", 2) |
-                (fi == 4 ? borderHeavy : border),
-            stat_box("STATUS", "Day 1 OK", 10) | border,
-        };
+    std::thread inference_thread([&]() {
+        state->current_prompt = "Hello, what is the meaning of life?";
+        std::string model_path = "/home/manish/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf";
+        if (const char* env = std::getenv("LLM_TUI_MODEL"); env && *env) {
+            model_path = env;
+        }
 
-        ftxui::Elements rows = {
-            header(),
-            separator(),
-            hbox(std::move(panel_row1)),
-            hbox(std::move(panel_row2)),
-            separator(),
-            footer(kp),
-        };
-        return vbox(std::move(rows));
+        if (hook.load(model_path, 2048, 0)) {
+            // continuously generate to keep TUI alive
+            while (running.load()) {
+                hook.generate(state->current_prompt, [&](const std::string& /*token*/) {});
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+        }
     });
 
-    // ---- Event handler — 2-D navigation ------------------------------
-    auto component = CatchEvent(renderer, [&](Event evt) {
-        // q / Esc  →  quit
+    // ---- Panels -------------------------------------------------------
+    std::vector<ftxui::Component> panels = {
+        CreatePanelTopology(state),
+        CreatePanelPacketStream(state),
+        CreatePanelAttention(state),
+        CreatePanelMetrics(state),
+        CreatePanelAnomalies(state),
+        Renderer([] { return stat_box("STATUS", "Day 1 OK"); })
+    };
+
+    // Decorate panels with borders and highlights
+    std::vector<ftxui::Component> decorated_panels;
+    std::vector<std::string> titles = {
+        "1. MODEL TOPOLOGY", "2. LIVE PACKET STREAM", "3. ATTENTION MATRIX",
+        "4. RUNTIME METRICS", "5. ANOMALY LEDGER", "6. STATUS"
+    };
+
+    for (size_t i = 0; i < panels.size(); ++i) {
+        auto wrapped = Renderer(panels[i], [i, &focus_index, &panels, &titles] {
+            bool focused = (static_cast<int>(i) == focus_index);
+            return window(text(titles[i]) | (focused ? bold : dim), panels[i]->Render())
+                   | size(WIDTH, EQUAL, 40)
+                   | size(HEIGHT, EQUAL, 24)
+                   | (focused ? borderHeavy : border);
+        });
+        decorated_panels.push_back(wrapped);
+    }
+
+    // Layout
+    auto main_container = Container::Vertical({
+        Container::Horizontal({decorated_panels[0], decorated_panels[1], decorated_panels[2]}),
+        Container::Horizontal({decorated_panels[3], decorated_panels[4], decorated_panels[5]})
+    });
+
+    auto root = Renderer(main_container, [&] {
+        return vbox({
+            header(),
+            separator(),
+            main_container->Render(),
+            separator(),
+            footer(keypresses.load()),
+        });
+    });
+
+    auto event_handler = CatchEvent(root, [&](Event evt) {
         if (evt == Event::Character('q') || evt == Event::Escape) {
             running = false;
             screen.ExitLoopClosure()();
             return true;
         }
 
-        // Tab  →  cycle all 6 panels in linear order 0→1→2→3→4→5→0…
         if (evt == Event::Tab) {
-            int linear = focus_row.load() * 3 + focus_col.load();
-            linear = (linear + 1) % 6;
-            focus_row = linear / 3;
-            focus_col = linear % 3;
+            focus_index = (focus_index + 1) % 6;
+            panels[focus_index]->TakeFocus();
             keypresses++;
             return true;
         }
 
-        // h / ←  →  move left  in the SAME row (col -1, wrap 2→0)
+        // Let the active panel handle the event first
+        if (panels[focus_index]->OnEvent(evt)) {
+            keypresses++;
+            return true;
+        }
+
+        // Cross-panel navigation using arrow keys / hjkl
         if (evt == Event::Character('h') || evt == Event::ArrowLeft) {
-            int c = focus_col.load();
-            focus_col = (c + 2) % 3;   // modular -1 ≡ +2 (mod 3)
+            focus_index = (focus_index + 2) % 3 + (focus_index / 3) * 3; // wrap same row left
+            panels[focus_index]->TakeFocus();
             keypresses++;
             return true;
         }
 
-        // l / →  →  move right in the SAME row (col +1, wrap 0→2)
         if (evt == Event::Character('l') || evt == Event::ArrowRight) {
-            int c = focus_col.load();
-            focus_col = (c + 1) % 3;
+            focus_index = (focus_index + 1) % 3 + (focus_index / 3) * 3; // wrap same row right
+            panels[focus_index]->TakeFocus();
             keypresses++;
             return true;
         }
 
-        // j / ↓  →  jump to the OTHER row, same column  (row toggles 0↔1)
         if (evt == Event::Character('j') || evt == Event::ArrowDown) {
-            focus_row = 1 - focus_row.load();   // 0→1, 1→0
+            focus_index = (focus_index + 3) % 6; // jump row down
+            panels[focus_index]->TakeFocus();
             keypresses++;
             return true;
         }
 
-        // k / ↑  →  jump to the OTHER row, same column  (same as j for 2 rows)
         if (evt == Event::Character('k') || evt == Event::ArrowUp) {
-            focus_row = 1 - focus_row.load();
+            focus_index = (focus_index + 3) % 6; // jump row up
+            panels[focus_index]->TakeFocus();
             keypresses++;
             return true;
         }
 
-        // + / =  →  grow progress bar (0..10)
-        if (evt == Event::Character('+') || evt == Event::Character('=')) {
-            int p = progress.load();
-            progress = std::min(10, p + 1);
-            keypresses++;
-            return true;
-        }
-
-        // - / _  →  shrink progress bar (0..10)
-        if (evt == Event::Character('-') || evt == Event::Character('_')) {
-            int p = progress.load();
-            progress = std::max(0, p - 1);
-            keypresses++;
-            return true;
-        }
-
-        return false;   // not handled, let FTXUI's default handling see it
+        return false;
     });
 
-    // Tick the screen at ~30 FPS even with no input, so the focus highlight
-    // redraws when state changes elsewhere.
+    panels[focus_index]->TakeFocus();
+
     std::thread ticker([&] {
         while (running.load()) {
+            // Drain telemetry
+            while (auto p = sink.pop_for(std::chrono::milliseconds(0))) {
+                state->update_from_packet(*p);
+            }
+            
+            // Poll detector ledger
+            auto new_anomalies = hook.detector().ledger();
+            if (!new_anomalies.empty()) {
+                std::lock_guard<std::recursive_mutex> lock(state->mutex);
+                state->anomalies = new_anomalies;
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
             screen.PostEvent(Event::Custom);
         }
     });
 
-    screen.Loop(component);
+    screen.Loop(event_handler);
     running = false;
+    
+    // Stop interception if possible. The generate function may block until it's done.
+    if (inference_thread.joinable()) inference_thread.join();
     if (ticker.joinable()) ticker.join();
 
     tui_log()->info("tui_hello exiting cleanly (keypresses={})", keypresses.load());

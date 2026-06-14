@@ -1,11 +1,5 @@
 // =============================================================================
 //  LlamaInterceptor.cpp
-//  -----------------------------------------------------------------------------
-//  Day 1: minimal "load + decode 1 token + print topology" implementation.
-//  Day 2: holds an AnomalyDetector, emits a Topology packet on load, and
-//         wraps llama_decode with TokenStart / LayerLatency / TokenEnd
-//         packets (single, model-wide latency on D2; per-layer on D3).
-//  Day 3: extended to emit per-layer packets once we have real ModelTopology.
 // =============================================================================
 #include "hook/LlamaInterceptor.hpp"
 #include "llama-model.h"
@@ -119,6 +113,7 @@ bool LlamaInterceptor::load(const std::string& gguf_path, int n_ctx, int n_threa
     cparams.n_threads    = (n_threads > 0) ? n_threads
                                           : static_cast<int>(std::thread::hardware_concurrency());
     cparams.n_threads_batch = cparams.n_threads;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.cb_eval = [](struct ggml_tensor* t, bool ask, void* user_data) -> bool {
         auto* self = static_cast<LlamaInterceptor*>(user_data);
         return self->on_eval(t, ask);
@@ -214,7 +209,7 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
     // Capture Tensor statistics for designated intermediate nodes
     if (t->data != nullptr && t->type == GGML_TYPE_F32) {
         std::string base_name = get_tensor_base_name(name);
-        if (base_name == "Qcur" || base_name == "kqv_out" || base_name == "ffn_down" || base_name == "norm") {
+        if (base_name == "Qcur" || base_name == "kqv_out" || base_name == "ffn_down" || base_name == "norm" || base_name == "kq_soft_max") {
             int64_t n = ggml_nelements(t);
             if (n > 0) {
                 const float* data = (const float*)t->data;
@@ -254,7 +249,7 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 TelemetryPacket p = make_packet(PacketKind::TensorStats, ++seq_counter_);
                 p.layer_id = layer_id;
                 
-                if (base_name == "Qcur" || base_name == "kqv_out") {
+                if (base_name == "Qcur" || base_name == "kqv_out" || base_name == "kq_soft_max") {
                     p.layer_type = LayerType::AttentionSelf;
                 } else if (base_name == "ffn_down") {
                     p.layer_type = LayerType::Mlp;
@@ -275,18 +270,32 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 p.sigma = sigma;
                 p.device = 0;
                 
-                // Extract 4x4 attention slice from Qcur activations if available
-                if (base_name == "Qcur" && n >= 16) {
+                // Extract 4x4 attention slice from kq_soft_max activations if available
+                if (base_name == "kq_soft_max" && t->ne[0] > 0 && t->ne[1] > 0) {
+                    int64_t stride_r = t->ne[0];
+                    int r_max = std::min(static_cast<int64_t>(4), static_cast<int64_t>(t->ne[1]));
+                    int c_max = std::min(static_cast<int64_t>(4), static_cast<int64_t>(t->ne[0]));
+                    
                     float patch_max = 1e-5f;
-                    for (int i = 0; i < 16; ++i) {
-                        patch_max = std::max(patch_max, std::abs(data[i]));
+                    for (int r = 0; r < r_max; ++r) {
+                        for (int c = 0; c < c_max; ++c) {
+                            patch_max = std::max(patch_max, std::abs(data[r * stride_r + c]));
+                        }
                     }
-                    for (int i = 0; i < 16; ++i) {
-                        p.attn_patch[i] = std::abs(data[i]) / patch_max;
+                    
+                    // zero out first
+                    std::fill(std::begin(p.attn_patch), std::end(p.attn_patch), 0.0f);
+                    
+                    for (int r = 0; r < r_max; ++r) {
+                        for (int c = 0; c < c_max; ++c) {
+                            p.attn_patch[r * 4 + c] = std::abs(data[r * stride_r + c]) / patch_max;
+                        }
                     }
                 }
-                
                 dispatch(p, sink_, detector_);
+                
+                // Artificially slow down execution so the TUI can render the active node progression
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
     }

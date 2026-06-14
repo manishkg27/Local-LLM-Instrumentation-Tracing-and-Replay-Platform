@@ -1,7 +1,6 @@
 // =============================================================================
 //  hello_inference.cpp
 //  -----------------------------------------------------------------------------
-//  Day 1 + Day 2 — Person 1 deliverable.
 //
 //  Loads a GGUF model via LlamaInterceptor, decodes 1 token, prints layer
 //  topology and decode latency, drains the telemetry ring buffer, and
@@ -108,7 +107,7 @@ int main(int argc, char** argv) {
         const auto& t = hook.topology();
         std::cout << "\n"
                   << "╔══════════════════════════════════════════════════════════╗\n"
-                  << "║           LLM-TUI Day 2 — hello_inference PASS          ║\n"
+                  << "║           LLM-TUI — hello_inference PASS                 ║\n"
                   << "╠══════════════════════════════════════════════════════════╣\n"
                   << "║  Model   : " << t.name << "\n"
                   << "║  n_layer : " << t.n_layer << "\n"
