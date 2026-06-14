@@ -192,6 +192,3 @@ llm-tui/
 
 ---
 
-## 📝 License
-
-MIT.
