@@ -56,3 +56,4 @@ replays/*.json
 # OS
 .DS_Store
 Thumbs.db
+Testing/Temporary/CTestCostData.txt

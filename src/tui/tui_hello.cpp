@@ -103,6 +103,7 @@ int main() {
     llm_tui::RingBuffer<llm_tui::TelemetryPacket> sink(ring_capacity);
     llm_tui::LlamaInterceptor hook;
     hook.set_sink(&sink);
+    hook.set_active_head_ptr(&state->selected_head);
     // Wire the full attention matrix cache from the interceptor to the TUI state
     state->attn_cache_ptr = &hook.attn_cache();
 
@@ -148,7 +149,8 @@ int main() {
         CreatePanelMetrics(state),
         CreatePanelAnomalies(state),
         Renderer([state] { 
-            return stat_box("GENERATION", state->generated_text.empty() ? "Waiting for model..." : state->generated_text); 
+            std::string st = state->generated_text.empty() ? "Waiting for model..." : state->generated_text;
+            return stat_box("GENERATION & STATUS", st); 
         })
     };
 
@@ -167,11 +169,13 @@ int main() {
                                  (i == 2 && state->attention_fullscreen);
             
             auto content = window(text(titles[i]) | (focused ? bold : dim), panels[i]->Render())
-                   | (focused ? borderHeavy : border);
+                   | (focused ? borderHeavy : border) | (focused ? color(Color::Yellow) : color(Color::Default));
                    
             if (!is_fullscreen) {
                 if (i == 1 || i == 4) {
                     content = content | flex | size(HEIGHT, EQUAL, 24);
+                } else if (i == 3) {
+                    content = content | size(WIDTH, EQUAL, 55) | size(HEIGHT, EQUAL, 24);
                 } else {
                     content = content | size(WIDTH, EQUAL, 40) | size(HEIGHT, EQUAL, 24);
                 }
@@ -224,6 +228,22 @@ int main() {
             focus_index = (focus_index + 1) % 6;
             panels[focus_index]->TakeFocus();
             keypresses++;
+            return true;
+        }
+
+
+
+
+
+        // Global contrast adjustment
+        if (evt == Event::Character('+') || evt == Event::Character('=')) {
+            std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            state->attention_contrast = std::min(5.0f, state->attention_contrast + 0.1f);
+            return true;
+        }
+        if (evt == Event::Character('-') || evt == Event::Character('_')) {
+            std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            state->attention_contrast = std::max(0.1f, state->attention_contrast - 0.1f);
             return true;
         }
 

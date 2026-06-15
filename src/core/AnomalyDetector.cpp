@@ -50,8 +50,8 @@ void AnomalyDetector::evaluate(const TelemetryPacket& pkt) {
         if (rule_outlier(pkt)) {
             record(Severity::Warn, AnomalyCode::OutlierFeature, pkt.layer_id,
                    pkt.timestamp_ns,
-                   fmt::format("layer {}: |x|_max={:.3f} > {:.1f}*sigma={:.3f}",
-                                pkt.layer_id, pkt.max_abs, cfg_.outlier_k, pkt.sigma));
+                   fmt::format("Outlier Feature Layer {}: Max > {:.1f}",
+                                pkt.layer_id, cfg_.outlier_k));
         }
         if (rule_clipping(pkt)) {
             record(Severity::Error, AnomalyCode::ClippingRisk, pkt.layer_id,
@@ -83,7 +83,7 @@ void AnomalyDetector::evaluate(const TelemetryPacket& pkt) {
     if (pkt.kind == PacketKind::Anomaly) {
         if (pkt.anomaly_code == AnomalyCode::CpuFallback) {
             record(pkt.severity, pkt.anomaly_code, pkt.layer_id, pkt.timestamp_ns,
-                   fmt::format("Decode failure: llama_decode returned error code {} (possible context window OOM)", static_cast<int>(pkt.max_abs)));
+                   fmt::format("CUDA OOM Fallback: Processing {} on CPU Host Memory.", to_string(pkt.layer_type)));
         } else {
             record(pkt.severity, pkt.anomaly_code, pkt.layer_id, pkt.timestamp_ns,
                    "General runtime anomaly detected");

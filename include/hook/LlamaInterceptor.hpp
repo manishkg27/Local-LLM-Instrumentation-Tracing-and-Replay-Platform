@@ -12,6 +12,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 #include "core/AnomalyDetector.hpp"
 #include "core/AttentionSnapshot.hpp"
@@ -66,6 +68,9 @@ public:
     // replace the previous sink.
     void set_sink(RingBuffer<TelemetryPacket>* sink) { sink_ = sink; }
 
+    // Wire an atomic pointer from the TUI to dynamically read the selected head.
+    void set_active_head_ptr(std::atomic<int>* ptr) { active_head_ptr_ = ptr; }
+
     // Read-only accessors used by the TUI panels.
     const ModelTopology& topology() const { return topology_; }
     AnomalyDetector&     detector()       { return detector_; }
@@ -82,6 +87,12 @@ private:
     // load().
     void emit_topology_packet();
     bool on_eval(struct ggml_tensor* t, bool ask);
+    void metrics_worker_loop();
+
+    struct PendingMetrics {
+        TelemetryPacket p;
+        std::vector<float> data_sample;
+    };
 
     llama_model*   model_ = nullptr;
     llama_context* ctx_   = nullptr;
@@ -93,6 +104,12 @@ private:
     std::chrono::steady_clock::time_point last_tensor_time_;
     std::vector<float> layer_latencies_us_;
     AttentionCache attn_cache_;   // full attention matrix side-channel
+    std::atomic<int>* active_head_ptr_ = nullptr;
+
+    // Async metrics computation
+    RingBuffer<PendingMetrics> metrics_queue_{1024};
+    std::thread metrics_worker_;
+    std::atomic<bool> worker_running_{true};
 };
 
 } // namespace llm_tui

@@ -40,15 +40,6 @@ ftxui::Component CreatePanelAnomalies(std::weak_ptr<AppState> state) {
             }
             
             int total = static_cast<int>(state->anomalies.size());
-            if (state->is_replay_mode && state->replay_cursor >= 0 && state->replay_cursor < static_cast<int>(state->packets.size())) {
-                uint64_t max_ts = state->packets[state->replay_cursor].timestamp_ns;
-                int valid_count = 0;
-                for (const auto& a : state->anomalies) {
-                    if (a.timestamp_ns <= max_ts) valid_count++;
-                    else break;
-                }
-                total = valid_count;
-            }
             
             if (total == 0) {
                 rows.push_back(text("✓ No numerical anomalies detected") | color(Color::Green));
@@ -71,24 +62,32 @@ ftxui::Component CreatePanelAnomalies(std::weak_ptr<AppState> state) {
                 std::string msg = entry.message;
                 if (msg.size() > 42) msg = msg.substr(0, 39) + "...";
                 
-                double rel_time = 0.0;
-                if (start_ts > 0 && entry.timestamp_ns > start_ts) {
-                    rel_time = (entry.timestamp_ns - start_ts) / 1e9;
-                }
+                auto wall_now = std::chrono::system_clock::now();
+                auto steady_now = std::chrono::steady_clock::now();
+                auto steady_ns = std::chrono::nanoseconds(entry.timestamp_ns);
+                auto pkt_wall = wall_now - (steady_now.time_since_epoch() - steady_ns);
+                
+                auto time_t_val = std::chrono::system_clock::to_time_t(pkt_wall);
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(pkt_wall.time_since_epoch()).count() % 1000;
+                if (ms < 0) ms += 1000; // handle negative edge cases
+                
+                struct tm tm_val;
+                localtime_r(&time_t_val, &tm_val);
+                
                 std::stringstream time_ss;
-                time_ss << std::fixed << std::setprecision(2) << rel_time << "s";
+                time_ss << std::put_time(&tm_val, "%H:%M:%S") << "." << std::setfill('0') << std::setw(3) << ms;
                 
                 rows.push_back(hbox(Elements{
-                    text("[" + time_ss.str() + "]") | dim,
+                    text(time_ss.str() + " ") | dim,
                     icon,
-                    text(msg)
+                    text(" " + msg)
                 }));
             }
             
             Elements footer_info = {
                 text("Total: ") | dim,
                 text(std::to_string(total)) | color(Color::RedLight),
-                text("  [j/k] scroll  [g/G] top/bottom") | dim
+                text("  [j/k] scroll") | dim
             };
             
             return vbox(Elements{
@@ -116,14 +115,7 @@ ftxui::Component CreatePanelAnomalies(std::weak_ptr<AppState> state) {
                 scroll_offset_ = std::max(scroll_offset_ - 1, 0);
                 return true;
             }
-            if (event == ftxui::Event::Character('g')) {
-                scroll_offset_ = 0;
-                return true;
-            }
-            if (event == ftxui::Event::Character('G')) {
-                scroll_offset_ = std::max(0, total - 1);
-                return true;
-            }
+
             return false;
         }
 

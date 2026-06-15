@@ -3,6 +3,7 @@
 // =============================================================================
 #include "hook/LlamaInterceptor.hpp"
 #include "llama-model.h"
+#include <ggml-backend.h>
 
 #include <llama.h>
 #include <spdlog/spdlog.h>
@@ -80,9 +81,15 @@ LayerType deduce_layer_type(const llama_layer& layer) {
 }
 } // namespace
 
-LlamaInterceptor::LlamaInterceptor() = default;
+LlamaInterceptor::LlamaInterceptor() {
+    metrics_worker_ = std::thread(&LlamaInterceptor::metrics_worker_loop, this);
+}
 
 LlamaInterceptor::~LlamaInterceptor() {
+    worker_running_ = false;
+    if (metrics_worker_.joinable()) {
+        metrics_worker_.join();
+    }
     if (smpl_)  llama_sampler_free(smpl_);
     if (ctx_)   llama_free(ctx_);
     if (model_) llama_model_free(model_);
@@ -209,50 +216,55 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
     // Capture Tensor statistics for designated intermediate nodes
     if (t->data != nullptr && t->type == GGML_TYPE_F32) {
         std::string base_name = get_tensor_base_name(name);
-        if (base_name == "Qcur" || base_name == "kqv_out" || base_name == "ffn_down" || base_name == "norm" || base_name == "kq_soft_max") {
+        bool is_qcur = base_name.find("Qcur") != std::string::npos || base_name.find("attn_q") != std::string::npos;
+        bool is_kqv = base_name.find("kqv_out") != std::string::npos || base_name.find("attn_kqv") != std::string::npos || base_name.find("attn_v") != std::string::npos;
+        bool is_ffn = base_name.find("ffn_down") != std::string::npos || base_name.find("ffn_gate") != std::string::npos || base_name.find("ffn_up") != std::string::npos || (base_name.find("ffn") != std::string::npos && base_name.find("norm") == std::string::npos);
+        bool is_norm = base_name.find("norm") != std::string::npos;
+        bool is_kq_soft_max = base_name.find("kq_soft_max") != std::string::npos || base_name.find("attn_kq_soft_max") != std::string::npos;
+
+        if (is_qcur || is_kqv || is_ffn || is_norm || is_kq_soft_max) {
             int64_t n = ggml_nelements(t);
             if (n > 0) {
-                const float* data = (const float*)t->data;
-                double sum = 0.0;
-                double sum_sq = 0.0;
-                float max_abs = 0.0f;
-                int64_t zero_count = 0;
-                
-                // Limit sampling size to 4096 elements to keep timing overhead negligible on CPU
+                // Limit sampling size to 4096 elements to keep timing overhead negligible
                 int64_t step = 1;
                 int64_t limit = n;
                 if (n > 4096) {
                     step = n / 4096;
                     limit = 4096 * step;
                 }
-                
-                int64_t counted = 0;
-                for (int64_t i = 0; i < limit; i += step) {
-                    float val = data[i];
-                    sum += val;
-                    sum_sq += val * val;
-                    float abs_val = std::abs(val);
-                    if (abs_val > max_abs) {
-                        max_abs = abs_val;
+                int64_t counted = limit / step;
+
+                // Copy data safely from device/host to our sample buffer
+                std::vector<float> sample(counted);
+                if (t->buffer && ggml_backend_buffer_is_host(t->buffer)) {
+                    const float* data = (const float*)t->data;
+                    for (int64_t i = 0, j = 0; i < limit; i += step, ++j) {
+                        sample[j] = data[i];
                     }
-                    if (abs_val < 1e-6f) {
-                        zero_count++;
+                } else if (t->buffer) {
+                    // GPU / Device tensor
+                    for (int64_t i = 0, j = 0; i < limit; i += step, ++j) {
+                        ggml_backend_tensor_get(t, &sample[j], i * sizeof(float), sizeof(float));
                     }
-                    counted++;
+                } else {
+                    const float* data = (const float*)t->data;
+                    for (int64_t i = 0, j = 0; i < limit; i += step, ++j) {
+                        sample[j] = data[i];
+                    }
                 }
-                
-                float mean = static_cast<float>(sum / counted);
-                float variance = static_cast<float>((sum_sq / counted) - (mean * mean));
-                float sigma = std::sqrt(std::max(0.0f, variance));
-                float sparsity = static_cast<float>(zero_count) / counted;
-                
+
                 TelemetryPacket p = make_packet(PacketKind::TensorStats, ++seq_counter_);
                 p.layer_id = layer_id;
                 
-                if (base_name == "Qcur" || base_name == "Kcur" || base_name == "kqv_out" || base_name == "kq_soft_max" ||
+                bool is_kq_soft_max = (base_name == "kq_soft_max" || base_name.find("kq_soft_max") != std::string::npos);
+                
+                if (base_name == "Qcur" || base_name == "Kcur" || base_name == "kqv_out" || is_kq_soft_max ||
                     base_name.find("attn") != std::string::npos) {
                     p.layer_type = LayerType::AttentionSelf;
-                } else if (base_name == "ffn_down" || base_name == "ffn_gate" || base_name == "ffn_up") {
+                } else if (base_name.find("ffn_down") != std::string::npos || 
+                           base_name.find("ffn_gate") != std::string::npos || 
+                           base_name.find("ffn_up") != std::string::npos ||
+                           base_name.find("ffn") != std::string::npos && base_name.find("norm") == std::string::npos) {
                     p.layer_type = LayerType::Mlp;
                 } else if (base_name == "norm" || base_name.find("attn_norm") != std::string::npos ||
                            base_name.find("ffn_norm") != std::string::npos) {
@@ -266,11 +278,7 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                     static_cast<int32_t>(t->ne[3])
                 };
                 
-                p.sparsity = sparsity;
-                p.mean = mean;
-                p.max_abs = max_abs;
-                p.sigma = sigma;
-                p.device = 0;
+                p.device = (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) ? 1 : 0; // 1=CUDA/Device, 0=CPU
                 
                 // -----------------------------------------------------------------------
                 // Extract attention matrix from kq_soft_max activations.
@@ -286,14 +294,18 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 // We extract a 7x7 patch from head 0, showing the last 7 query
                 // positions attending to the last 7 key positions.
                 // -----------------------------------------------------------------------
-                if (base_name == "kq_soft_max" && t->ne[0] > 0 && t->ne[1] > 0 && t->ne[2] > 0) {
+                if (is_kq_soft_max && t->ne[0] > 0 && t->ne[1] > 0 && t->ne[2] > 0) {
                     const int64_t n_kv   = t->ne[0];  // key/value cache length
                     const int64_t n_head = t->ne[1];  // number of attention heads
                     const int64_t n_tok  = t->ne[2];  // number of query tokens
 
-                    // Use head 0 for visualization
-                    const int head = 0;
-                    p.head_idx = 0;
+                    // Use active_head for visualization
+                    int head = 0;
+                    if (active_head_ptr_) {
+                        head = active_head_ptr_->load();
+                    }
+                    head = std::clamp(head, 0, static_cast<int>(n_head - 1));
+                    p.head_idx = static_cast<int8_t>(head);
                     p.attn_seq_len = static_cast<int8_t>(std::min(n_tok, static_cast<int64_t>(127)));
 
                     // We want to extract the last min(7, n_tok) query positions
@@ -304,13 +316,28 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                     const int row_start = static_cast<int>(n_tok - view_rows);
                     const int col_start = static_cast<int>(n_kv - view_cols);
 
-                    // Find max for normalization across this patch
                     float patch_max = 0.0f;
-                    for (int r = 0; r < view_rows; ++r) {
-                        for (int c = 0; c < view_cols; ++c) {
-                            int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
-                            float val = std::abs(data[offset]);
-                            if (val > patch_max) patch_max = val;
+
+                    // We fetched samples above but for attention patch, we need full patch.
+                    // Instead of full sync which is slow, just get patch.
+                    if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) {
+                        for (int r = 0; r < view_rows; ++r) {
+                            for (int c = 0; c < view_cols; ++c) {
+                                int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                                float val = 0.0f;
+                                ggml_backend_tensor_get(t, &val, offset * sizeof(float), sizeof(float));
+                                val = std::abs(val);
+                                if (val > patch_max) patch_max = val;
+                            }
+                        }
+                    } else {
+                        const float* data = (const float*)t->data;
+                        for (int r = 0; r < view_rows; ++r) {
+                            for (int c = 0; c < view_cols; ++c) {
+                                int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                                float val = std::abs(data[offset]);
+                                if (val > patch_max) patch_max = val;
+                            }
                         }
                     }
                     if (patch_max < 1e-12f) patch_max = 1.0f;
@@ -322,11 +349,24 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                     const int patch_r_start = 7 - view_rows;
                     const int patch_c_start = 7 - view_cols;
 
-                    for (int r = 0; r < view_rows; ++r) {
-                        for (int c = 0; c < view_cols; ++c) {
-                            int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
-                            float val = std::abs(data[offset]) / patch_max;
-                            p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = val;
+                    if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) {
+                        for (int r = 0; r < view_rows; ++r) {
+                            for (int c = 0; c < view_cols; ++c) {
+                                int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                                float val = 0.0f;
+                                ggml_backend_tensor_get(t, &val, offset * sizeof(float), sizeof(float));
+                                val = std::abs(val) / patch_max;
+                                p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = val;
+                            }
+                        }
+                    } else {
+                        const float* data = (const float*)t->data;
+                        for (int r = 0; r < view_rows; ++r) {
+                            for (int c = 0; c < view_cols; ++c) {
+                                int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                                float val = std::abs(data[offset]) / patch_max;
+                                p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = val;
+                            }
                         }
                     }
 
@@ -345,25 +385,84 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                         full_matrix.head_id = 0;
                         full_matrix.n_kv = static_cast<int>(n_kv);
                         full_matrix.n_head = static_cast<int>(n_head);
-                        full_matrix.n_tok = static_cast<int>(n_tok);
+                        int max_dim = 256;
+                        int copy_tok = std::min(static_cast<int>(n_tok), max_dim);
+                        int copy_kv  = std::min(static_cast<int>(n_kv), max_dim);
+
+                        full_matrix.n_tok = copy_tok;
+                        full_matrix.n_kv = copy_kv;
                         full_matrix.timestamp_ns = p.timestamp_ns;
-                        // Store the full matrix for head 0: n_tok rows x n_kv cols
-                        full_matrix.data.resize(static_cast<size_t>(n_tok) * n_kv);
-                        for (int64_t t = 0; t < n_tok; ++t) {
-                            for (int64_t k = 0; k < n_kv; ++k) {
-                                int64_t offset = (0 + t * n_head) * n_kv + k;  // head 0
-                                full_matrix.data[t * n_kv + k] = std::abs(data[offset]) / patch_max;
+                        
+                        // We extract the *last* copy_tok query positions and *last* copy_kv key positions
+                        int64_t start_tok = n_tok - copy_tok;
+                        int64_t start_kv = n_kv - copy_kv;
+
+                        // Store the full matrix for active head
+                        full_matrix.data.resize(static_cast<size_t>(copy_tok) * copy_kv);
+                        if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) {
+                            // Extract full matrix from GPU
+                            for (int64_t t_i = 0; t_i < copy_tok; ++t_i) {
+                                for (int64_t k_i = 0; k_i < copy_kv; ++k_i) {
+                                    int64_t offset = (head + (start_tok + t_i) * n_head) * n_kv + (start_kv + k_i);
+                                    float val = 0.0f;
+                                    ggml_backend_tensor_get(t, &val, offset * sizeof(float), sizeof(float));
+                                    full_matrix.data[t_i * copy_kv + k_i] = std::abs(val) / patch_max;
+                                }
+                            }
+                        } else {
+                            const float* data = (const float*)t->data;
+                            for (int64_t t_i = 0; t_i < copy_tok; ++t_i) {
+                                for (int64_t k_i = 0; k_i < copy_kv; ++k_i) {
+                                    int64_t offset = (head + (start_tok + t_i) * n_head) * n_kv + (start_kv + k_i);
+                                    full_matrix.data[t_i * copy_kv + k_i] = std::abs(data[offset]) / patch_max;
+                                }
                             }
                         }
-                        attn_cache_.store(full_matrix);
+                        attn_cache_.store(std::move(full_matrix));
                     }
                 }
-                dispatch(p, sink_, detector_);
+                
+                PendingMetrics pm;
+                pm.p = p;
+                pm.data_sample = std::move(sample);
+                metrics_queue_.push(pm);
             }
         }
     }
 
     return true;
+}
+
+void LlamaInterceptor::metrics_worker_loop() {
+    while (worker_running_) {
+        if (auto opt = metrics_queue_.pop_for(std::chrono::milliseconds(10))) {
+            auto pm = *opt;
+            double sum = 0.0;
+            double sum_sq = 0.0;
+            float max_abs = 0.0f;
+            int64_t zero_count = 0;
+            int64_t counted = pm.data_sample.size();
+
+            if (counted > 0) {
+                for (float val : pm.data_sample) {
+                    sum += val;
+                    sum_sq += val * val;
+                    float abs_val = std::abs(val);
+                    if (abs_val > max_abs) max_abs = abs_val;
+                    if (abs_val < 1e-6f) zero_count++;
+                }
+
+                float mean = static_cast<float>(sum / counted);
+                float variance = static_cast<float>((sum_sq / counted) - (mean * mean));
+                pm.p.sigma = std::sqrt(std::max(0.0f, variance));
+                pm.p.sparsity = static_cast<float>(zero_count) / counted;
+                pm.p.mean = mean;
+                pm.p.max_abs = max_abs;
+            }
+
+            dispatch(pm.p, sink_, detector_);
+        }
+    }
 }
 
 void LlamaInterceptor::generate(const std::string& prompt, std::function<void(const std::string&)> on_token) {
@@ -462,7 +561,7 @@ void LlamaInterceptor::generate(const std::string& prompt, std::function<void(co
             piece[n_piece] = '\0';
             log->info("Sampled token id={} text=\"{}\"", id, piece);
             if (on_token) on_token(std::string(piece));
-        } else if (n_piece <= 0 && id != llama_token_eos(vocab)) {
+        } else if (n_piece <= 0 && id != llama_vocab_eos(vocab)) {
             // Unprintable or special token, but not EOS. Show a tiny block.
             if (on_token) on_token("\u2581"); 
         }
@@ -478,7 +577,7 @@ void LlamaInterceptor::generate(const std::string& prompt, std::function<void(co
 
         llama_batch_free(batch);
 
-        if (llama_token_is_eog(vocab, id)) {
+        if (llama_vocab_is_eog(vocab, id)) {
             break;
         }
 

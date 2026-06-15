@@ -75,6 +75,8 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             if (tokens.empty()) {
                 tokens = {"[BOS]"};
             }
+            
+            int total_tokens = static_cast<int>(tokens.size());
 
             // ------------------------------------------------------------------
             // 3. Find the latest attention data for the selected head/layer
@@ -108,9 +110,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             bool has_patch = false;
 
             if (!use_full_matrix) {
-                int max_idx = state->is_replay_mode
-                                  ? state->replay_cursor
-                                  : static_cast<int>(state->packets.size()) - 1;
+                int max_idx = static_cast<int>(state->packets.size()) - 1;
 
                 // Search backwards for the most recent kq_soft_max attention packet
                 if (max_idx >= 0 && max_idx < static_cast<int>(state->packets.size())) {
@@ -185,7 +185,6 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             // 5. Collect token labels for the visible window
             // ------------------------------------------------------------------
             // Use actual token count or fallback to generic labels
-            int total_tokens = static_cast<int>(tokens.size());
             if (total_tokens < kView) {
                 // Pad with empty tokens on the left
                 while (static_cast<int>(tokens.size()) < kView) {
@@ -217,13 +216,13 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
                 cell_w = std::max(cell_w, static_cast<int>(lbl.size()));
             for (const auto& lbl : row_labels)
                 cell_w = std::max(cell_w, static_cast<int>(lbl.size()));
-            cell_w = std::clamp(cell_w + 1, 4, 10); // +1 padding
+            cell_w = std::clamp(cell_w + 1, 4, 30); // +1 padding
 
             // Width of the row-label gutter (left axis)
             int gutter_w = 0;
             for (const auto& lbl : row_labels)
                 gutter_w = std::max(gutter_w, static_cast<int>(lbl.size()));
-            gutter_w = std::clamp(gutter_w + 1, 4, 10);
+            gutter_w = std::clamp(gutter_w + 1, 4, 30);
 
             // Helper: right-pad a string to target width
             auto pad = [](const std::string& s, int w) -> std::string {
@@ -341,8 +340,6 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
                 text("  ") | dim,
                 text("[+/-]: Contrast") | dim,
                 text("  ") | dim,
-                text("[H]: Cycle Head") | dim,
-                text("  ") | dim,
                 text("[Arrows]: Pan") | dim,
             };
 
@@ -367,14 +364,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             }
             std::lock_guard<std::recursive_mutex> lock(state->mutex);
 
-            if (event == ftxui::Event::Character('+') || event == ftxui::Event::Character('=')) {
-                state->attention_contrast = std::min(5.0f, state->attention_contrast + 0.1f);
-                return true;
-            }
-            if (event == ftxui::Event::Character('-') || event == ftxui::Event::Character('_')) {
-                state->attention_contrast = std::max(0.1f, state->attention_contrast - 0.1f);
-                return true;
-            }
+
 
             // Toggle fullscreen
             if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
@@ -384,16 +374,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
                 return true;
             }
 
-            // Cycle attention head
-            if (event == ftxui::Event::Character('h') || event == ftxui::Event::Character('H')) {
-                // Only intercept 'H' (shift-h) to avoid conflict with panel navigation 'h'
-                if (event == ftxui::Event::Character('H')) {
-                    state->selected_head = (state->selected_head + 1) % state->max_heads;
-                    return true;
-                }
-                // lowercase 'h' is handled by parent for panel navigation
-                return false;
-            }
+
 
             // Pan with arrow keys
             if (event == ftxui::Event::ArrowLeft) {

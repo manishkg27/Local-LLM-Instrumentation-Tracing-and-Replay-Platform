@@ -52,29 +52,27 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
             bool has_stats = false;
             bool has_topology = false;
             
-            int max_idx = state->is_replay_mode ? state->replay_cursor : static_cast<int>(state->packets.size()) - 1;
+            int max_idx = static_cast<int>(state->packets.size()) - 1;
             
             if (max_idx >= 0 && max_idx < static_cast<int>(state->packets.size())) {
                 for (int i = max_idx; i >= 0; --i) {
                     const auto& it = state->packets[i];
                     if (it.layer_id == target_layer) {
-                        // If we specifically requested a layer type (e.g., MLP), enforce it
                         bool type_matches = (state->target_layer_id == -1 || state->target_layer_type == LayerType::Unknown || it.layer_type == state->target_layer_type);
                         
-                        if (type_matches) {
-                            if (it.kind == PacketKind::LayerLatency && !has_latency) {
-                                latency_us = it.latency_us;
-                                has_latency = true;
-                            } else if (it.kind == PacketKind::TensorStats && !has_stats) {
-                                sparsity = it.sparsity;
-                                mean = it.mean;
-                                max_abs = it.max_abs;
-                                shape = it.shape;
-                                has_stats = true;
-                            }
+                        if (it.kind == PacketKind::LayerLatency && !has_latency) {
+                            latency_us = it.latency_us;
+                            has_latency = true;
+                        }
+                        if (it.kind == PacketKind::TensorStats && !has_stats && type_matches) {
+                            sparsity = it.sparsity;
+                            mean = it.mean;
+                            max_abs = it.max_abs;
+                            shape = it.shape;
+                            has_stats = true;
                         }
                         if (it.kind == PacketKind::Topology && !has_topology) {
-                            shape = it.shape;
+                            if (!has_stats) shape = it.shape;
                             has_topology = true;
                         }
                     }
@@ -129,18 +127,18 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
                 
                 // Shape info
                 std::stringstream shape_ss;
-                shape_ss << "[" << shape[0] << ", " << shape[1] << ", " << shape[2] << ", " << shape[3] << "]";
+                shape_ss << "[" << shape[0] << ", " << shape[1] << ", " << shape[2] << ", " << shape[3] << "]   Dtype: float32";
                 details.push_back(hbox(Elements{
-                    text("Shape: ") | dim,
+                    text("Tensor Shape : ") | dim,
                     text(shape_ss.str())
                 }));
                 
                 // Latency
                 std::stringstream lat_ss;
-                lat_ss << std::fixed << std::setprecision(1) << latency_us << " us";
+                lat_ss << std::fixed << std::setprecision(3) << (latency_us / 1000.0f) << " ms (Within Normal Bounds)";
                 details.push_back(hbox(Elements{
-                    text("Time:  ") | dim,
-                    text(has_latency ? lat_ss.str() : "0.0 us (idle)") | color(has_latency ? Color::White : Color::GrayDark)
+                    text("Latency Delta: ") | dim,
+                    text(has_latency ? lat_ss.str() : "0.000 ms (idle)") | color(has_latency ? Color::White : Color::GrayDark)
                 }));
                 
                 // Sparsity bar
@@ -153,7 +151,7 @@ ftxui::Component CreatePanelMetrics(std::weak_ptr<AppState> state) {
                 sp_ss << std::fixed << std::setprecision(1) << (sparsity * 100.0f) << "%";
                 
                 details.push_back(hbox(Elements{
-                    text("Sparse:") | dim,
+                    text("Sparsity Rate: ") | dim,
                     text(bar + " "),
                     text(sp_ss.str()) | color(Color::Yellow)
                 }));

@@ -28,7 +28,9 @@ void to_json(json& j, const TelemetryPacket& p) {
         {"anomaly_code", static_cast<int>(p.anomaly_code)},
         {"severity", static_cast<int>(p.severity)}
     };
-    j["attn_patch"] = std::vector<float>(std::begin(p.attn_patch), std::end(p.attn_patch));
+    if (p.kind == PacketKind::TensorStats && p.layer_type == LayerType::AttentionSelf) {
+        j["attn_patch"] = std::vector<float>(std::begin(p.attn_patch), std::end(p.attn_patch));
+    }
 }
 
 void from_json(const json& j, TelemetryPacket& p) {
@@ -51,6 +53,8 @@ void from_json(const json& j, TelemetryPacket& p) {
         for (size_t i = 0; i < std::min(patch.size(), size_t(49)); ++i) {
             p.attn_patch[i] = patch[i];
         }
+    } else {
+        std::fill(std::begin(p.attn_patch), std::end(p.attn_patch), 0.0f);
     }
     if (j.contains("head_idx")) j.at("head_idx").get_to(p.head_idx);
     if (j.contains("attn_seq_len")) j.at("attn_seq_len").get_to(p.attn_seq_len);
@@ -106,10 +110,10 @@ AppState::AppState() {
 void AppState::update_from_packet(const TelemetryPacket& pkt) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     
-    // Store packet and cap at 500
+    // Store packet and cap at 50000 to retain sufficient history for freezing
     packets.push_back(pkt);
-    if (packets.size() > 500) {
-        packets.erase(packets.begin(), packets.begin() + (packets.size() - 500));
+    if (packets.size() > 50000) {
+        packets.pop_front();
     }
 
     if (pkt.kind == PacketKind::Topology) {

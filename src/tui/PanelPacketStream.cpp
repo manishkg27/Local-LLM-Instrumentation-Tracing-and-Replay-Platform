@@ -13,7 +13,7 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
         std::weak_ptr<AppState> state_;
         bool freeze_scroll_ = false;
         int scroll_offset_ = 0; // scroll offset from the bottom (0 = show latest)
-        int frozen_total_ = 0;
+        uint64_t frozen_seq_id_ = 0;
         
     public:
         Impl(std::weak_ptr<AppState> state) : state_(state) {}
@@ -32,9 +32,9 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             std::string freeze_indicator = freeze_scroll_ ? " [FROZEN] " : " [LIVE] ";
             rows.push_back(hbox(Elements{
                 text(" ID    ") | bold | color(Color::Yellow),
-                text(" TIME (s) ") | bold | color(Color::Yellow),
-                text(" TYPE                ") | bold | color(Color::Yellow),
-                text(" DEVICE ") | bold | color(Color::Yellow),
+                text(" TIMESTAMP    ") | bold | color(Color::Yellow),
+                text(" LAYER TYPE   ") | bold | color(Color::Yellow),
+                text(" COMPUTE DEVICE   ") | bold | color(Color::Yellow),
                 filler(),
                 text(freeze_indicator) | bold | color(freeze_scroll_ ? Color::Red : Color::Green)
             }));
@@ -55,12 +55,21 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                 scroll_offset_ = 0;
             }
             
+            int base_max = total - 1;
+            if (freeze_scroll_) {
+                base_max = 0;
+                for (int i = total - 1; i >= 0; --i) {
+                    if (state->packets[i].sequence_id <= frozen_seq_id_) {
+                        base_max = i;
+                        break;
+                    }
+                }
+            }
+            
             // Ensure scroll offset is within bounds
-            scroll_offset_ = std::clamp(scroll_offset_, 0, std::max(0, total - max_display));
+            scroll_offset_ = std::clamp(scroll_offset_, 0, std::max(0, base_max));
             
             uint64_t start_ts = state->packets[0].timestamp_ns;
-            int base_max = state->is_replay_mode ? state->replay_cursor 
-                           : (freeze_scroll_ ? std::min(frozen_total_ - 1, total - 1) : total - 1);
             int max_idx = base_max - scroll_offset_;
             
             int count = 0;
@@ -72,12 +81,21 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                 
                 std::string id_str = std::to_string(p.sequence_id);
                 if (id_str.size() < 5) id_str = std::string(5 - id_str.size(), ' ') + id_str;
+                auto wall_now = std::chrono::system_clock::now();
+                auto steady_now = std::chrono::steady_clock::now();
+                auto steady_ns = std::chrono::nanoseconds(p.timestamp_ns);
+                auto pkt_wall = wall_now - (steady_now.time_since_epoch() - steady_ns);
                 
-                double rel_time = (p.timestamp_ns - start_ts) / 1e9;
+                auto time_t_val = std::chrono::system_clock::to_time_t(pkt_wall);
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(pkt_wall.time_since_epoch()).count() % 1000;
+                if (ms < 0) ms += 1000; // handle negative edge cases
+                
+                struct tm tm_val;
+                localtime_r(&time_t_val, &tm_val);
+                
                 std::stringstream time_ss;
-                time_ss << std::fixed << std::setprecision(3) << rel_time;
-                std::string time_str = time_ss.str();
-                if (time_str.size() < 9) time_str = std::string(9 - time_str.size(), ' ') + time_str;
+                time_ss << std::put_time(&tm_val, "%H:%M:%S") << "." << std::setfill('0') << std::setw(3) << ms;
+                std::string time_str = time_ss.str() + "  ";
                 
                 // Construct type description (combines PacketKind and LayerType if relevant)
                 std::string type_str;
@@ -89,9 +107,8 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                     type_str = to_string(p.kind);
                 }
                 if (type_str.size() < 20) type_str += std::string(20 - type_str.size(), ' ');
-                
-                std::string dev_str = (p.device == 1) ? "CUDA" : "CPU";
-                if (dev_str.size() < 7) dev_str = std::string(7 - dev_str.size(), ' ') + dev_str;
+                std::string dev_str = (p.device == 1) ? "CUDA [GPU 0]" : "CPU (Fallback)";
+                if (dev_str.size() < 17) dev_str += std::string(17 - dev_str.size(), ' ');
                 
                 // Color code packets: Warnings/Errors in red/yellow, normal in green
                 Color row_color = Color::Green;
@@ -140,7 +157,9 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                 if (!freeze_scroll_) {
                     scroll_offset_ = 0;
                 } else {
-                    frozen_total_ = static_cast<int>(state->packets.size());
+                    if (!state->packets.empty()) {
+                        frozen_seq_id_ = state->packets.back().sequence_id;
+                    }
                 }
                 return true;
             }
@@ -151,7 +170,7 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
                     return true;
                 }
                 if (event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) {
-                    scroll_offset_ = std::min(total - 10, scroll_offset_ + 1);
+                    scroll_offset_ += 1;
                     return true;
                 }
             }

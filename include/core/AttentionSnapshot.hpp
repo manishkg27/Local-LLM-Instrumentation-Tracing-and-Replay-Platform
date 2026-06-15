@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include <shared_mutex>
 #include <vector>
 
 namespace llm_tui {
@@ -52,31 +51,31 @@ struct AttentionMatrix {
 class AttentionCache {
 public:
     // Producer: write the latest full attention matrix.
-    void store(const AttentionMatrix& matrix) {
-        std::lock_guard<std::shared_mutex> lock(mtx_);
-        current_ = matrix;
+    void store(AttentionMatrix matrix) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        current_ = std::move(matrix);
     }
 
     // Consumer: read the latest full attention matrix.
     // Returns a copy to avoid holding the lock during rendering.
     AttentionMatrix load() const {
-        std::shared_lock<std::shared_mutex> lock(mtx_);
+        std::lock_guard<std::mutex> lock(mtx_);
         return current_;
     }
 
     // Check if we have data without copying.
     bool has_data() const {
-        std::shared_lock<std::shared_mutex> lock(mtx_);
+        std::lock_guard<std::mutex> lock(mtx_);
         return !current_.empty();
     }
 
     void clear() {
-        std::lock_guard<std::shared_mutex> lock(mtx_);
+        std::lock_guard<std::mutex> lock(mtx_);
         current_.clear();
     }
 
 private:
-    mutable std::shared_mutex mtx_;
+    mutable std::mutex mtx_;
     AttentionMatrix current_;
 };
 

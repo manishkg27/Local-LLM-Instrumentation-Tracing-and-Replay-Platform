@@ -2,8 +2,10 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <mutex>
 #include <memory>
+#include <atomic>
 #include "core/TelemetryPacket.hpp"
 #include "core/AttentionSnapshot.hpp"
 #include "core/AnomalyDetector.hpp"
@@ -42,7 +44,7 @@ struct AppState {
     int active_layer_id = -1; // From incoming packets (current executing layer)
     
     // All packets processed so far
-    std::vector<TelemetryPacket> packets;
+    std::deque<TelemetryPacket> packets;
 
     // Anomalies ledger entries copied from detector
     std::vector<LedgerEntry> anomalies;
@@ -55,7 +57,7 @@ struct AppState {
     std::string status_message = "Press [:] to type command, [?] or [:help] for commands";
 
     // Attention head selection
-    int selected_head = 0;           // which attention head to visualize
+    std::atomic<int> selected_head{0}; // which attention head to visualize
     int max_heads = 32;              // updated from topology
     int attention_seq_len = 0;       // actual sequence length from latest kq_soft_max
 
@@ -69,8 +71,6 @@ struct AppState {
     int breakpoint_layer_id = -1; // Auto-pause if this layer is hit
     
     // Replay Mode Stepping
-    bool is_replay_mode = false;
-    int replay_cursor = -1; // -1 means show all (or inactive if !is_replay_mode)
 
     AppState();
     
