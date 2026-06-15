@@ -88,10 +88,7 @@ ftxui::Component CreatePanelTopology(std::weak_ptr<AppState> state) {
                 return false;
             }
             
-            if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
-                state->topology_fullscreen = !state->topology_fullscreen;
-                return true;
-            }
+            // Fullscreen toggle removed, handled globally
             
             int total = static_cast<int>(state->visible_nodes.size());
             

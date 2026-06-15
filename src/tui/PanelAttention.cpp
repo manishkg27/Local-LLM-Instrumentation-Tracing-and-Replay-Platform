@@ -163,7 +163,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             }
 
             int kView = 4;
-            if (state->attention_fullscreen) {
+            if (state->fullscreen_panel_index == 2) {
                 if (use_full_matrix && !full_matrix.empty()) {
                     // In fullscreen with full matrix, show up to 16x16 or the full matrix
                     kView = std::min(std::max(matrix_rows, matrix_cols), 16);
@@ -175,7 +175,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
             // view_r0/view_c0: top-left offset into the matrix
             int view_r0 = 0;
             int view_c0 = 0;
-            if (!use_full_matrix && has_patch && !state->attention_fullscreen) {
+            if (!use_full_matrix && has_patch && state->fullscreen_panel_index != 2) {
                 // For the 7x7 patch fallback, show bottom-right 4x4
                 view_r0 = 3;
                 view_c0 = 3;
@@ -332,7 +332,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
                 text(coord_ss.str()) | color(Color::Green),
                 text(layer_ss.str()) | color(Color::Yellow),
                 text("  ") | dim,
-                text(state->attention_fullscreen ? "[FULLSCREEN]" : "") | dim,
+                text(state->fullscreen_panel_index == 2 ? "[FULLSCREEN]" : "") | dim,
             };
 
             Elements help = {
@@ -366,13 +366,7 @@ ftxui::Component CreatePanelAttention(std::weak_ptr<AppState> state) {
 
 
 
-            // Toggle fullscreen
-            if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
-                state->attention_fullscreen = !state->attention_fullscreen;
-                pan_x_ = 0;
-                pan_y_ = 0;
-                return true;
-            }
+            // Fullscreen toggle removed, handled globally
 
 
 

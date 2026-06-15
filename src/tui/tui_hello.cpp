@@ -164,9 +164,7 @@ int main() {
     for (size_t i = 0; i < panels.size(); ++i) {
         auto wrapped = Renderer(panels[i], [i, &focus_index, state, &panels, &titles] {
             bool focused = (static_cast<int>(i) == focus_index);
-            bool is_fullscreen = (i == 0 && state->topology_fullscreen) || 
-                                 (i == 1 && state->packet_stream_fullscreen) || 
-                                 (i == 2 && state->attention_fullscreen);
+            bool is_fullscreen = (state->fullscreen_panel_index == static_cast<int>(i));
             
             auto content = window(text(titles[i]) | (focused ? bold : dim), panels[i]->Render())
                    | (focused ? borderHeavy : border) | (focused ? color(Color::Yellow) : color(Color::Default));
@@ -195,12 +193,8 @@ int main() {
 
     auto root = Renderer(main_container, [&] {
         ftxui::Element content;
-        if (state->topology_fullscreen) {
-            content = decorated_panels[0]->Render();
-        } else if (state->packet_stream_fullscreen) {
-            content = decorated_panels[1]->Render();
-        } else if (state->attention_fullscreen) {
-            content = decorated_panels[2]->Render();
+        if (state->fullscreen_panel_index >= 0 && state->fullscreen_panel_index < static_cast<int>(decorated_panels.size())) {
+            content = decorated_panels[state->fullscreen_panel_index]->Render();
         } else {
             content = main_container->Render();
         }
@@ -227,13 +221,24 @@ int main() {
         if (evt == Event::Tab) {
             focus_index = (focus_index + 1) % 6;
             panels[focus_index]->TakeFocus();
+            if (state->fullscreen_panel_index != -1) {
+                state->fullscreen_panel_index = focus_index;
+            }
             keypresses++;
             return true;
         }
 
-
-
-
+        // Global fullscreen toggle
+        if (evt == Event::Character('f') || evt == Event::Character('F')) {
+            std::lock_guard<std::recursive_mutex> lock(state->mutex);
+            if (state->fullscreen_panel_index == focus_index) {
+                state->fullscreen_panel_index = -1; // disable
+            } else {
+                state->fullscreen_panel_index = focus_index; // enable
+            }
+            keypresses++;
+            return true;
+        }
 
         // Global contrast adjustment
         if (evt == Event::Character('+') || evt == Event::Character('=')) {
@@ -257,6 +262,7 @@ int main() {
         if (evt == Event::Character('h') || evt == Event::ArrowLeft) {
             focus_index = (focus_index + 2) % 3 + (focus_index / 3) * 3; // wrap same row left
             panels[focus_index]->TakeFocus();
+            if (state->fullscreen_panel_index != -1) state->fullscreen_panel_index = focus_index;
             keypresses++;
             return true;
         }
@@ -264,6 +270,7 @@ int main() {
         if (evt == Event::Character('l') || evt == Event::ArrowRight) {
             focus_index = (focus_index + 1) % 3 + (focus_index / 3) * 3; // wrap same row right
             panels[focus_index]->TakeFocus();
+            if (state->fullscreen_panel_index != -1) state->fullscreen_panel_index = focus_index;
             keypresses++;
             return true;
         }
@@ -271,6 +278,7 @@ int main() {
         if (evt == Event::Character('j') || evt == Event::ArrowDown) {
             focus_index = (focus_index + 3) % 6; // jump row down
             panels[focus_index]->TakeFocus();
+            if (state->fullscreen_panel_index != -1) state->fullscreen_panel_index = focus_index;
             keypresses++;
             return true;
         }
@@ -278,6 +286,7 @@ int main() {
         if (evt == Event::Character('k') || evt == Event::ArrowUp) {
             focus_index = (focus_index + 3) % 6; // jump row up
             panels[focus_index]->TakeFocus();
+            if (state->fullscreen_panel_index != -1) state->fullscreen_panel_index = focus_index;
             keypresses++;
             return true;
         }

@@ -50,9 +50,7 @@ struct AppState {
     std::vector<LedgerEntry> anomalies;
 
     // TUI view options
-    bool attention_fullscreen = false;
-    bool topology_fullscreen = false;
-    bool packet_stream_fullscreen = false;
+    int fullscreen_panel_index = -1; // -1 means no panel is fullscreen
     float attention_contrast = 1.0f;
     std::string status_message = "Press [:] to type command, [?] or [:help] for commands";
 

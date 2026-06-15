@@ -148,10 +148,7 @@ ftxui::Component CreatePanelPacketStream(std::weak_ptr<AppState> state) {
             std::lock_guard<std::recursive_mutex> lock(state->mutex);
             int total = static_cast<int>(state->packets.size());
             
-            if (event == ftxui::Event::Character('f') || event == ftxui::Event::Character('F')) {
-                state->packet_stream_fullscreen = !state->packet_stream_fullscreen;
-                return true;
-            }
+            // Fullscreen toggle removed, handled globally
             if (event == ftxui::Event::Character(' ')) {
                 freeze_scroll_ = !freeze_scroll_;
                 if (!freeze_scroll_) {
