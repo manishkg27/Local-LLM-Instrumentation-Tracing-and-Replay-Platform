@@ -94,12 +94,28 @@ int main() {
     int focus_index = 0;
 
     // ---- Interceptor & Telemetry --------------------------------------
-    llm_tui::RingBuffer<llm_tui::TelemetryPacket> sink(1024);
+    // Configurable ring buffer size via environment variable
+    std::size_t ring_capacity = 1024;
+    if (const char* env_cap = std::getenv("LLM_TUI_RING_BUFFER"); env_cap && *env_cap) {
+        ring_capacity = static_cast<std::size_t>(std::atoi(env_cap));
+        if (ring_capacity < 64) ring_capacity = 64;
+    }
+    llm_tui::RingBuffer<llm_tui::TelemetryPacket> sink(ring_capacity);
     llm_tui::LlamaInterceptor hook;
     hook.set_sink(&sink);
+    // Wire the full attention matrix cache from the interceptor to the TUI state
+    state->attn_cache_ptr = &hook.attn_cache();
 
     std::thread inference_thread([&]() {
-        state->current_prompt = "<|im_start|>user\nHello, what is the meaning of life?<|im_end|>\n<|im_start|>assistant\n";
+        std::vector<std::string> prompts = {
+            "Hello, what is the meaning of life?",
+            "Explain the concept of quantum entanglement in simple terms.",
+            "Write a short haiku about a rogue artificial intelligence.",
+            "What are the Three Laws of Robotics created by Isaac Asimov?",
+            "Can you tell me a short, funny joke about programmers?"
+        };
+        int prompt_idx = 0;
+        
         std::string model_path = "/home/manish/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf";
         if (const char* env = std::getenv("LLM_TUI_MODEL"); env && *env) {
             model_path = env;
@@ -108,6 +124,9 @@ int main() {
         if (hook.load(model_path, 2048, 0)) {
             // continuously generate to keep TUI alive
             while (running.load()) {
+                state->current_prompt = "<|im_start|>user\n" + prompts[prompt_idx] + "<|im_end|>\n<|im_start|>assistant\n";
+                prompt_idx = (prompt_idx + 1) % prompts.size();
+                
                 {
                     std::lock_guard<std::recursive_mutex> lock(state->mutex);
                     state->generated_text = "";
@@ -151,7 +170,11 @@ int main() {
                    | (focused ? borderHeavy : border);
                    
             if (!is_fullscreen) {
-                content = content | size(WIDTH, EQUAL, 40) | size(HEIGHT, EQUAL, 24);
+                if (i == 1 || i == 4) {
+                    content = content | flex | size(HEIGHT, EQUAL, 24);
+                } else {
+                    content = content | size(WIDTH, EQUAL, 40) | size(HEIGHT, EQUAL, 24);
+                }
             } else {
                 content = content | flex;
             }
@@ -178,13 +201,16 @@ int main() {
             content = main_container->Render();
         }
         
-        return vbox({
+        auto main_ui = vbox({
             header(),
             separator(),
             content | flex,
             separator(),
             footer(keypresses.load()),
         });
+        
+        // Wrap in an hbox with flex to force the vbox to consume the full terminal width
+        return hbox({ main_ui | flex });
     });
 
     auto event_handler = CatchEvent(root, [&](Event evt) {

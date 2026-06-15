@@ -103,52 +103,6 @@ This will:
 
 ---
 
-## 🚀 Run
-
-### Day 1 — Hello, world (Person 1)
-
-```bash
-./build/hello_inference
-# or specify a different model
-./build/hello_inference /path/to/your-model.gguf
-```
-
-Expected output: a 3-line summary of the model's topology, plus
-`llama_decode` latency for the prompt "Hello".
-
-### Day 1 — TUI hello (Person 2)
-
-```bash
-./build/tui_hello
-```
-
-You should see a NerdFont-bordered header, **5 mock panels** (one per
-future day), and a footer showing live `keypresses=…`. Try:
-
-```
-j  j  k  l  Tab  h  q
-```
-
-`q` (or `Esc`) quits.
-
----
-
-## 🗺️ Roadmap (8-day plan)
-
-| Day | Date       | Theme | Deliverable |
-|-----|------------|-------|-------------|
-| 1   | Mon 8 Jun  | Foundation         | Build env, TelemetryPacket, hello_inference + tui_hello |
-| 2   | Tue 9 Jun  | Core infra        | RingBuffer + tests, 5-panel grid + Tab focus |
-| 3   | Wed 10 Jun | Hooks → P1        | LlamaInterceptor → Panel 1 (Model Topology) |
-| 4   | Thu 11 Jun | Stats + P2/P3     | Tensor stats → Panel 2 (Packet Stream) + Panel 3 (Attention) |
-| 5   | Fri 12 Jun | Anomaly + P4/P5   | AnomalyDetector → Panel 4 (Metrics) + Panel 5 (Anomaly Ledger) |
-| 6   | Sat 13 Jun | Integration + UX  | End-to-end, consumer thread, vim command bar, help overlay |
-| 7   | Sun 14 Jun | Integration test  | 256-token run on Qwen2.5-Coder, bug bash |
-| 8   | Mon 15 Jun | 🛟 BUFFER          | README, demo GIF, cross-platform check, polish |
-| —   | Tue 16 Jun | **SUBMIT**         | 🎯 |
-
----
-
 ## 🗂️ Project layout
 
 ```

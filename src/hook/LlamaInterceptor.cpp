@@ -249,11 +249,13 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 TelemetryPacket p = make_packet(PacketKind::TensorStats, ++seq_counter_);
                 p.layer_id = layer_id;
                 
-                if (base_name == "Qcur" || base_name == "kqv_out" || base_name == "kq_soft_max") {
+                if (base_name == "Qcur" || base_name == "Kcur" || base_name == "kqv_out" || base_name == "kq_soft_max" ||
+                    base_name.find("attn") != std::string::npos) {
                     p.layer_type = LayerType::AttentionSelf;
-                } else if (base_name == "ffn_down") {
+                } else if (base_name == "ffn_down" || base_name == "ffn_gate" || base_name == "ffn_up") {
                     p.layer_type = LayerType::Mlp;
-                } else if (base_name == "norm") {
+                } else if (base_name == "norm" || base_name.find("attn_norm") != std::string::npos ||
+                           base_name.find("ffn_norm") != std::string::npos) {
                     p.layer_type = LayerType::RmsNorm;
                 }
                 
@@ -270,44 +272,93 @@ bool LlamaInterceptor::on_eval(struct ggml_tensor* t, bool ask) {
                 p.sigma = sigma;
                 p.device = 0;
                 
-                // Extract 4x4 attention slice from kq_soft_max activations if available
-                if (base_name == "kq_soft_max" && t->ne[0] > 0 && t->ne[1] > 0) {
-                    int64_t n_kv = t->ne[0];
-                    int64_t n_q = t->ne[1];
-                    int r_max = std::min(static_cast<int64_t>(7), n_q);
-                    int c_max = std::min(static_cast<int64_t>(7), n_kv);
-                    
-                    int r_start = std::max(static_cast<int64_t>(0), n_q - 7);
-                    int c_start = std::max(static_cast<int64_t>(0), n_kv - 7);
-                    
+                // -----------------------------------------------------------------------
+                // Extract attention matrix from kq_soft_max activations.
+                //
+                // The ggml tensor shape for kq_soft_max is [n_kv, n_head, n_tokens]:
+                //   ne[0] = n_kv  (number of key/value positions in cache)
+                //   ne[1] = n_head (number of attention heads)
+                //   ne[2] = n_tokens (batch dimension for autoregressive decoding)
+                //
+                // Memory layout: for head h, query position t, key position k:
+                //   data[(h + t * n_head) * n_kv + k]
+                //
+                // We extract a 7x7 patch from head 0, showing the last 7 query
+                // positions attending to the last 7 key positions.
+                // -----------------------------------------------------------------------
+                if (base_name == "kq_soft_max" && t->ne[0] > 0 && t->ne[1] > 0 && t->ne[2] > 0) {
+                    const int64_t n_kv   = t->ne[0];  // key/value cache length
+                    const int64_t n_head = t->ne[1];  // number of attention heads
+                    const int64_t n_tok  = t->ne[2];  // number of query tokens
+
+                    // Use head 0 for visualization
+                    const int head = 0;
+                    p.head_idx = 0;
+                    p.attn_seq_len = static_cast<int8_t>(std::min(n_tok, static_cast<int64_t>(127)));
+
+                    // We want to extract the last min(7, n_tok) query positions
+                    // and for each, the last min(7, n_kv) key positions.
+                    const int view_rows = static_cast<int>(std::min(static_cast<int64_t>(7), n_tok));
+                    const int view_cols = static_cast<int>(std::min(static_cast<int64_t>(7), n_kv));
+
+                    const int row_start = static_cast<int>(n_tok - view_rows);
+                    const int col_start = static_cast<int>(n_kv - view_cols);
+
+                    // Find max for normalization across this patch
                     float patch_max = 0.0f;
-                    for (int r = 0; r < r_max; ++r) {
-                        for (int c = 0; c < c_max; ++c) {
-                            patch_max = std::max(patch_max, std::abs(data[(r_start + r) * n_kv + (c_start + c)]));
+                    for (int r = 0; r < view_rows; ++r) {
+                        for (int c = 0; c < view_cols; ++c) {
+                            int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                            float val = std::abs(data[offset]);
+                            if (val > patch_max) patch_max = val;
                         }
                     }
-                    if (patch_max < 1e-12f) {
-                        patch_max = 1.0f;
-                    }
-                    
-                    // zero out first
+                    if (patch_max < 1e-12f) patch_max = 1.0f;
+
+                    // Zero out the patch buffer
                     std::fill(std::begin(p.attn_patch), std::end(p.attn_patch), 0.0f);
-                    
-                    // Anchor to the bottom-right of the 7x7 patch buffer
-                    int patch_r_start = 7 - r_max;
-                    int patch_c_start = 7 - c_max;
-                    
-                    for (int r = 0; r < r_max; ++r) {
-                        for (int c = 0; c < c_max; ++c) {
-                            p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = 
-                                std::abs(data[(r_start + r) * n_kv + (c_start + c)]) / patch_max;
+
+                    // Place the 7x7 data in the buffer, aligned to bottom-right
+                    const int patch_r_start = 7 - view_rows;
+                    const int patch_c_start = 7 - view_cols;
+
+                    for (int r = 0; r < view_rows; ++r) {
+                        for (int c = 0; c < view_cols; ++c) {
+                            int64_t offset = (head + (row_start + r) * n_head) * n_kv + (col_start + c);
+                            float val = std::abs(data[offset]) / patch_max;
+                            p.attn_patch[(patch_r_start + r) * 7 + (patch_c_start + c)] = val;
                         }
+                    }
+
+                    interceptor_log()->debug(
+                        "kq_soft_max layer={} n_kv={} n_head={} n_tok={} patch_max={:.6f}",
+                        layer_id, n_kv, n_head, n_tok, patch_max);
+
+                    // -----------------------------------------------------------------
+                    // Side-channel: also store the full attention matrix for the
+                    // TUI to read. We only store one snapshot at a time (the most
+                    // recent kq_soft_max for the active layer/head).
+                    // -----------------------------------------------------------------
+                    {
+                        AttentionMatrix full_matrix;
+                        full_matrix.layer_id = layer_id;
+                        full_matrix.head_id = 0;
+                        full_matrix.n_kv = static_cast<int>(n_kv);
+                        full_matrix.n_head = static_cast<int>(n_head);
+                        full_matrix.n_tok = static_cast<int>(n_tok);
+                        full_matrix.timestamp_ns = p.timestamp_ns;
+                        // Store the full matrix for head 0: n_tok rows x n_kv cols
+                        full_matrix.data.resize(static_cast<size_t>(n_tok) * n_kv);
+                        for (int64_t t = 0; t < n_tok; ++t) {
+                            for (int64_t k = 0; k < n_kv; ++k) {
+                                int64_t offset = (0 + t * n_head) * n_kv + k;  // head 0
+                                full_matrix.data[t * n_kv + k] = std::abs(data[offset]) / patch_max;
+                            }
+                        }
+                        attn_cache_.store(full_matrix);
                     }
                 }
                 dispatch(p, sink_, detector_);
-                
-                // Artificially slow down execution so the TUI can render the active node progression
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
     }

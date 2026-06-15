@@ -5,6 +5,7 @@
 #include <mutex>
 #include <memory>
 #include "core/TelemetryPacket.hpp"
+#include "core/AttentionSnapshot.hpp"
 #include "core/AnomalyDetector.hpp"
 #include "hook/LlamaInterceptor.hpp"
 
@@ -52,6 +53,14 @@ struct AppState {
     bool packet_stream_fullscreen = false;
     float attention_contrast = 1.0f;
     std::string status_message = "Press [:] to type command, [?] or [:help] for commands";
+
+    // Attention head selection
+    int selected_head = 0;           // which attention head to visualize
+    int max_heads = 32;              // updated from topology
+    int attention_seq_len = 0;       // actual sequence length from latest kq_soft_max
+
+    // Full attention matrix side-channel (set by tui_hello.cpp before main loop)
+    AttentionCache* attn_cache_ptr = nullptr;  // non-owning pointer to LlamaInterceptor::attn_cache()
 
     // Application Control
     bool capture_paused = false;

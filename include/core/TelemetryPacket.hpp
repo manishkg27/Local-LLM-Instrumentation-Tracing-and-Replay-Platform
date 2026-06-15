@@ -114,6 +114,10 @@ struct TelemetryPacket {
     LayerType     layer_type;
     Severity      severity;
     AnomalyCode   anomaly_code;
+    // ----- NEW: attention metadata -----
+    std::int8_t   head_idx;       // which attention head this attn_patch belongs to (-1 = unknown)
+    std::int8_t   attn_seq_len;   // actual sequence length at capture time (packed into padding area)
+    std::int16_t  reserved_pad;   // explicit padding to keep alignment
 
     // ----- 24 bytes -----
     Shape         shape;          // tensor shape, populated when kind == TensorStats

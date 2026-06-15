@@ -48,10 +48,12 @@ void from_json(const json& j, TelemetryPacket& p) {
     int sev; j.at("severity").get_to(sev); p.severity = static_cast<Severity>(sev);
     if (j.contains("attn_patch")) {
         std::vector<float> patch = j.at("attn_patch").get<std::vector<float>>();
-        for (size_t i = 0; i < std::min(patch.size(), size_t(16)); ++i) {
+        for (size_t i = 0; i < std::min(patch.size(), size_t(49)); ++i) {
             p.attn_patch[i] = patch[i];
         }
     }
+    if (j.contains("head_idx")) j.at("head_idx").get_to(p.head_idx);
+    if (j.contains("attn_seq_len")) j.at("attn_seq_len").get_to(p.attn_seq_len);
 }
 
 // --- JSON Serialization for LedgerEntry ---
@@ -167,6 +169,12 @@ void AppState::update_from_packet(const TelemetryPacket& pkt) {
     } else if (pkt.kind == PacketKind::LayerLatency || pkt.kind == PacketKind::TensorStats) {
         if (pkt.layer_id >= 0) {
             active_layer_id = pkt.layer_id;
+        }
+        // Update max_heads from attention tensor shapes
+        if (pkt.kind == PacketKind::TensorStats &&
+            pkt.layer_type == LayerType::AttentionSelf &&
+            pkt.shape[1] > 0) {
+            max_heads = pkt.shape[1];  // ne[1] = n_head
         }
     }
 }

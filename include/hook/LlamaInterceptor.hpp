@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/AnomalyDetector.hpp"
+#include "core/AttentionSnapshot.hpp"
 #include "core/RingBuffer.hpp"
 #include "core/TelemetryPacket.hpp"
 
@@ -71,6 +72,10 @@ public:
     const AnomalyDetector& detector() const { return detector_; }
     bool loaded() const { return model_ != nullptr && ctx_ != nullptr; }
 
+    // Access the full attention matrix cache (thread-safe via shared_mutex).
+    AttentionCache& attn_cache() { return attn_cache_; }
+    const AttentionCache& attn_cache() const { return attn_cache_; }
+
 private:
     // Helper: build a Topology packet from this->topology_ and dispatch it
     // through both the sink and the detector. Called once at the end of
@@ -87,6 +92,7 @@ private:
     std::uint32_t  seq_counter_ = 0;
     std::chrono::steady_clock::time_point last_tensor_time_;
     std::vector<float> layer_latencies_us_;
+    AttentionCache attn_cache_;   // full attention matrix side-channel
 };
 
 } // namespace llm_tui
