@@ -1,8 +1,8 @@
 # Local LLM Instrumentation, Tracing, and Replay Platform
 
-A lightweight, non-invasive telemetry and diagnostic Text User Interface (TUI) for local transformer models running on `llama.cpp`. It hooks directly into the model's execution pipeline to capture layer-by-layer execution metrics, attention heatmaps, and tensor statistics in real-time, rendering them via an interactive 5-panel terminal interface.
+While there are many tools and wrappers online that treat LLMs as black boxes—simply automating API calls or chaining prompts—this platform takes a radically different approach. It is a lightweight, non-invasive telemetry and diagnostic Text User Interface (TUI) for local transformer models running on `llama.cpp`. 
 
-This project solves the "black box" problem of local LLM inference by providing deep visibility into intermediate activations, latency bottlenecks, and numerical stability issues without requiring any modifications to the upstream `llama.cpp` source code.
+Rather than just looking at inputs and outputs, it hooks directly into the model's low-level execution pipeline to capture layer-by-layer compute metrics, attention heatmaps, and tensor statistics in real-time, rendering them via an interactive 5-panel terminal interface. This solves the "black box" problem of local LLM inference by providing deep visibility into intermediate activations, latency bottlenecks, and numerical stability issues without requiring any modifications to the upstream `llama.cpp` source code.
 
 ![Screenshot](images/day1.png)
 
@@ -105,13 +105,25 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-### Run Commands
+### Run Commands & Testing the Features
 
-Start the primary Text User Interface application, ensuring you pass your model path if it differs from the default:
+Start the primary Text User Interface application. Ensure you pass a valid GGUF model path (if it differs from the default) and a testing prompt:
 
 ```bash
+# Run the application
 LLM_TUI_MODEL="/path/to/your/model.gguf" ./build/tui_hello
+
+# For verifying specific capabilities, you can test different prompts:
+# - Reasoning: "Explain the theory of relativity in simple terms."
+# - Code Gen: "Write a quicksort implementation in C++."
+# - Summarization: "Summarize the history of the Roman Empire."
 ```
+
+Once running, verify the features by:
+1. Observing the **Model Topology** map populate.
+2. Checking the **Live Packet Stream** for real-time telemetry (press `Space` to freeze/unfreeze).
+3. Using `Tab` to navigate to the **Attention Matrix** and adjusting contrast with `+` and `-`.
+4. Monitoring the **Anomaly Ledger** for any flagged `OutlierFeature` or `DeadLayer` warnings during long inferences.
 
 ---
 
@@ -126,3 +138,14 @@ LLM_TUI_MODEL="/path/to/your/model.gguf" ./build/tui_hello
 | `+` / `-` | Increase / decrease Attention Matrix weight contrast |
 | `f` / `F` | Toggle fullscreen mode for the currently focused panel |
 | `q` / `Esc` | Quit the application |
+
+---
+
+## Assumptions & Additional Features for Verification
+
+To assist with project verification and evaluation, please note the following assumptions and design choices:
+- **Hardware Agnostic, but CPU/GPU Aware:** The project assumes a POSIX-compliant environment (Linux/macOS) and assumes you have `llama.cpp` compatible hardware. The telemetry stream explicitly tags packets with the execution device (CPU vs. GPU) depending on your backend configuration.
+- **Model Compatibility:** We assume the use of standard GGUF models. The topological mapper is dynamically designed to recognize standard transformer blocks (Self-Attention, MLP) regardless of the specific architecture (e.g., Llama, Qwen, Mistral).
+- **Non-Invasive Architecture:** A core feature for verification is that we **do not touch the `llama.cpp` source code**. We achieve telemetry via `ggml` graph evaluation callbacks (`cb_eval`). You can verify this by checking that the `third_party/llama.cpp` submodule is unmodified.
+- **Zero-Allocation Hot Path:** To verify performance, note that the `TelemetryPacket` uses a fixed 80-byte size and bounded ring buffers to prevent memory leaks or heap fragmentation during prolonged inference.
+- **Real-Time Responsiveness:** The UI is decoupled from the inference thread. Verification of this feature can be seen when zooming/navigating the attention matrix smoothly while the model is actively generating tokens.

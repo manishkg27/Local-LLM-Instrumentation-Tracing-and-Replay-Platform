@@ -109,11 +109,25 @@ int main() {
 
     std::thread inference_thread([&]() {
         std::vector<std::string> prompts = {
-            "Hello, what is the meaning of life?",
-            "Explain the concept of quantum entanglement in simple terms.",
-            "Write a short haiku about a rogue artificial intelligence.",
-            "What are the Three Laws of Robotics created by Isaac Asimov?",
-            "Can you tell me a short, funny joke about programmers?"
+            "Explain how self-attention allows a transformer to understand the relationship between words in a sentence.",
+
+            "Given the sequence: 2, 4, 8, 16, 32, what is the next number and why?",
+
+            "Write a short story about a robot discovering an abandoned city. Use exactly 150 words.",
+
+            "Compare quicksort, mergesort, and heapsort in terms of time complexity, memory usage, and practical performance.",
+
+            "Translate the sentence 'Artificial intelligence is transforming software engineering' into French, German, and Hindi.",
+
+            "Summarize the following text in one sentence: The Industrial Revolution fundamentally changed manufacturing processes and accelerated economic growth.",
+
+            "A farmer has 17 sheep. All but 9 die. How many sheep are left?",
+
+            "Generate a C++ function that computes the Lowest Common Ancestor using binary lifting.",
+
+            "Why does the sentence 'The trophy doesn't fit in the suitcase because it is too large' refer to the trophy rather than the suitcase?",
+
+            "List the first 20 prime numbers separated by commas."
         };
         int prompt_idx = 0;
         
