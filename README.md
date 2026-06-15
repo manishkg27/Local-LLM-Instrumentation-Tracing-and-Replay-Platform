@@ -8,7 +8,7 @@ This project solves the "black box" problem of local LLM inference by providing 
 
 ---
 
-## ✨ Features
+## Features
 
 - **Non-Invasive Interception:** Links against `libllama.so` and intercepts model inference without modifying the upstream source code.
 - **Topology Discovery:** Automatically maps raw ggml compute graphs to logical transformer blocks (e.g., Attention, MLP, LayerNorm).
@@ -20,7 +20,7 @@ This project solves the "black box" problem of local LLM inference by providing 
 
 ---
 
-## 🏗️ Architecture & How It Works
+## Architecture & How It Works
 
 The platform uses a heavily optimized multi-threaded architecture to ensure that the user interface remains at 60 FPS without slowing down the model inference.
 
@@ -41,7 +41,7 @@ The platform uses a heavily optimized multi-threaded architecture to ensure that
 
 ---
 
-## 🗂️ Project Structure
+## Project Structure
 
 The codebase is organized cleanly to separate the user interface, backend telemetry, and model binding layers.
 
@@ -60,7 +60,7 @@ The codebase is organized cleanly to separate the user interface, backend teleme
 
 ---
 
-## ⚙️ Configuration & Environment Variables
+## Configuration & Environment Variables
 
 The platform can be customized dynamically using the following environment variables:
 
@@ -71,7 +71,7 @@ The platform can be customized dynamically using the following environment varia
 
 ---
 
-## 🛠️ Telemetry, Monitoring, and Debugging
+## Telemetry, Monitoring, and Debugging
 
 The platform continuously monitors the model in the background:
 - **Numerical Anomaly Ledger:** The `AnomalyDetector` evaluates telemetry packets and flags anomalies like `OutlierFeature` (Z-Score > threshold), `ClippingRisk` (FP16 saturation), `DeadLayer` (excessive sparsity), and `LatencyHotspot` (computation spikes).
@@ -80,7 +80,7 @@ The platform continuously monitors the model in the background:
 
 ---
 
-## 📦 Build Instructions
+## Build Instructions
 
 ### Dependencies
 - **CMake ≥ 3.20**
@@ -115,7 +115,7 @@ LLM_TUI_MODEL="/path/to/your/model.gguf" ./build/tui_hello
 
 ---
 
-## ⌨️ Keybindings
+## Keybindings
 
 | Key | Action |
 |-----|--------|
